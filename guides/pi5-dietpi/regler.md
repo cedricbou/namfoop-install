@@ -4,6 +4,10 @@ On part d'un DietPi standard, fraîchement installé sur le Pi 5, branché au r�
 commande installe namfoop et règle tout le Pi pour lui. Chaque réglage se défait, et chaque fichier
 modifié est copié avant.
 
+Mesure de référence : Pi 5 de 8 Go, DietPi, noyau `6.18.60+rpt-rpi-v8-rt`, réglages de base et
+profil scène posés, cœur 3 mesuré pendant que les trois autres sont chargés à fond
+(`scripts/namfoop-doctor --measure --load`), 25 novembre 2026 : **retard maximal 4 µs** en 60 s.
+
 ## Le matériel
 
 - **Un ventilateur actif** (l'Active Cooler officiel) : sans lui, le Pi ralentit dès qu'il chauffe,

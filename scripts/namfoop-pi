@@ -297,18 +297,21 @@ gouverneur_off() {
 # irq : les interruptions USB au-dessus du thread audio (FIFO 80), par rtirq.
 irq_desc="interruptions USB prioritaires (rtirq : $RTIRQ_LIST)"
 rtirq_list() { { sed -n 's/^RTIRQ_NAME_LIST="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$RTIRQ_DEFAULT" 2>/dev/null || true; } | tail -n1; }
+# Actif : les threads d'interruption USB tournent au-dessus du thread audio (FIFO 80).
+irq_threads() { ps -eLo rtprio=,comm= 2>/dev/null | awk '$2 ~ /^irq\/.*xhci/ {printf "%s%s", sep, $1; sep="/"}' || true; }
 irq_status() {
-  local posed=1 active=0
-  pkg_installed rtirq-init && [[ $(rtirq_list) == "$RTIRQ_LIST" ]] && systemctl is-enabled --quiet rtirq 2>/dev/null && posed=0
-  systemctl is-active --quiet rtirq 2>/dev/null && active=1
-  report "$irq_desc" "$posed" "$active" ""
+  local posed=1 active=0 prios
+  pkg_installed rtirq-init && [[ $(rtirq_list) == "$RTIRQ_LIST" ]] && unit_enabled rtirq && posed=0
+  prios=$(irq_threads)
+  [[ -n $prios ]] && (($(tr '/' '\n' <<<"$prios" | sort -n | head -n1) > 80)) && active=1
+  report "$irq_desc" "$posed" "$active" "${prios:+xhci en FIFO $prios}"
   return "$posed"
 }
 irq_on() {
   apt_install rtirq-init
   local before enabled=0
   before=$(rtirq_list)
-  systemctl is-enabled --quiet rtirq 2>/dev/null && enabled=1
+  unit_enabled rtirq && enabled=1
   # L'état d'avant : la liste, et si rtirq était déjà lancé au démarrage.
   state_set irq "$before"$'\n'"$enabled"
   if [[ $before != "$RTIRQ_LIST" ]]; then

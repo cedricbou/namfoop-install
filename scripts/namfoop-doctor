@@ -93,12 +93,13 @@ check_kernel() {
 check_clock() {
   section "Heure"
   local v
+  v=$(clock_sync_state)
   local dietpi_fix="dietpi-config, Advanced Options, Time sync mode, « Boot only » : une fois au démarrage, rien pendant le jeu"
   if clock_behind "$HERE/.."; then
     bad "heure en retard : $(date '+%F %T %Z'), avant le dernier commit de ce dépôt — paquets et téléchargements seront refusés" \
       "$( ((IS_PI)) && echo "$dietpi_fix ; tout de suite : sudo date -s \"AAAA-MM-JJ HH:MM\" (UTC)" || echo "sudo systemctl restart systemd-timesyncd")"
-  elif ! v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || [[ -z $v ]]; then
-    note "heure : $(date '+%F %T %Z') — synchronisation inconnue (timedatectl ne répond pas)" \
+  elif [[ $v == unknown ]]; then
+    note "heure : $(date '+%F %T %Z') — synchronisation inconnue (ni timedatectl ni témoin de systemd-timesyncd)" \
       "$( ((IS_PI)) && echo "$dietpi_fix" || echo "vérifier que l'heure est juste")"
   elif [[ $v == yes ]]; then
     good "heure synchronisée par le réseau : $(date '+%F %T %Z')"
@@ -302,7 +303,7 @@ pick_core() {
   if [[ -n $isolated ]]; then
     echo "${isolated##*[,-]}"
   else
-    echo $(($(nproc) - 1))
+    echo $(($(nproc --all) - 1))
   fi
 }
 
@@ -336,7 +337,7 @@ measure_tools() {
 # Les cœurs autres que celui mesuré, en liste pour stress-ng --taskset (ex. « 0,1,2 »).
 other_cores() {
   local c out=()
-  for ((c = 0; c < $(nproc); c++)); do
+  for ((c = 0; c < $(nproc --all); c++)); do
     ((c == $1)) || out+=("$c")
   done
   (IFS=,; echo "${out[*]}")
@@ -353,7 +354,7 @@ measure() {
     local others
     others=$(other_cores "$core")
     info "charge : stress-ng sur les cœurs $others"
-    stress-ng --cpu "$(($(nproc) - 1))" --taskset "$others" --timeout "$((DURATION + 5))s" --quiet &
+    stress-ng --cpu "$(($(nproc --all) - 1))" --taskset "$others" --timeout "$((DURATION + 5))s" --quiet &
     stress_pid=$!
     sleep 2
   else
@@ -386,7 +387,7 @@ measure() {
 # ---------------------------------------------------------------- rapport
 
 MEASURE_LINE=""
-echo "namfoop-doctor — $TARGET, $(uname -m), $(nproc) cœurs"
+echo "namfoop-doctor — $TARGET, $(uname -m), $(nproc --all) cœurs"
 check_kernel
 check_clock
 check_rights
