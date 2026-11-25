@@ -73,6 +73,16 @@ scripts/namfoop-rights off       # le retirer
 SSH compris. `status` le dit si la session en cours ne les a pas encore reçus. Le service de
 démarrage du Pi, lui, ne dépend pas de ce réglage : il pose ses propres limites.
 
+**Sur DietPi, par SSH** : le serveur SSH installé par défaut, Dropbear, n'applique pas ces limites,
+même après reconnexion (`status` et le diagnostic le détectent et le disent). Trois façons de les
+recevoir :
+
+- `sudo -iu $USER` ouvre, dans la session SSH, un shell qui les reçoit : le plus simple pour un
+  essai ;
+- la console du Pi (clavier et écran) les reçoit toujours ;
+- passer à OpenSSH, qui les applique : `dietpi-software`, SSH Server, OpenSSH (DietPi remplace
+  Dropbear ; revenir en arrière par le même menu).
+
 ## Les options
 
 | Option | Effet |

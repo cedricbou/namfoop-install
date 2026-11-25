@@ -144,3 +144,32 @@ ensure_clock() {
   done
   warn "heure toujours pas synchronisée après 30 s : vérifie le réseau (sur DietPi : dietpi-config, Advanced Options, Time sync mode)"
 }
+
+# ---------------------------------------------------------------- droits temps réel de la session
+
+# Vrai si la session en cours est arrivée par Dropbear, le serveur SSH de DietPi par défaut : construit
+# sans PAM, il n'applique pas /etc/security/limits.d, et le shell garde les limites du service
+# (priorité temps réel 0, mémoire verrouillable 8 Mo).
+session_via_dropbear() {
+  local pid=$$ comm stat
+  while ((pid > 1)); do
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null) || return 1
+    [[ $comm == dropbear ]] && return 0
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+    stat=${stat##*) } # après le nom du processus, qui peut contenir des espaces : « S <ppid> … »
+    pid=${stat#* }
+    pid=${pid%% *}
+    [[ $pid =~ ^[0-9]+$ ]] || return 1
+  done
+  return 1
+}
+
+# Comment recevoir des droits réglés mais absents de la session en cours.
+rights_reception_hint() {
+  local user=${1:-$(id -un)}
+  if session_via_dropbear; then
+    echo "cette session SSH passe par Dropbear, qui n'applique pas ces limites : « sudo -iu $user » ouvre une session qui les reçoit ; pour de bon, passer à OpenSSH (dietpi-software, SSH Server) ou jouer depuis la console"
+  else
+    echo "se déconnecter puis se reconnecter (SSH compris)"
+  fi
+}

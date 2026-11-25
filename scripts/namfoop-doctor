@@ -63,7 +63,11 @@ section() { printf '\n%s\n' "$1"; }
 is_arch() { [[ $TARGET == endeavouros || $TARGET == arch ]]; }
 
 rt_rights_fix() {
-  echo "scripts/namfoop-rights on, puis se reconnecter (le service de scène, lui, pose ses limites dans son unit)"
+  if "$HERE/namfoop-rights" status --quiet 2>/dev/null; then
+    echo "droits réglés, mais pas reçus par cette session : $(rights_reception_hint)"
+  else
+    echo "scripts/namfoop-rights on, et ensuite : $(rights_reception_hint) ; le service de scène, lui, pose ses limites dans son unit"
+  fi
 }
 
 # ---------------------------------------------------------------- noyau

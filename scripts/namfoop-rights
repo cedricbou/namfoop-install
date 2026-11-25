@@ -107,10 +107,9 @@ cmd_status() {
     if [[ $rt == unlimited || $rt -ge 80 ]] && [[ $mem == unlimited ]]; then
       ok "session en cours : priorité temps réel $rt, mémoire verrouillable $mem"
     elif configured; then
-      warn "session en cours : priorité $rt, mémoire $mem Ko — réglé, mais pas encore reçu : se reconnecter"
-      if pgrep -x dropbear &>/dev/null; then
-        info "si c'est toujours le cas après reconnexion : le serveur SSH Dropbear (celui de DietPi par défaut) peut ne pas appliquer ces limites ; OpenSSH (dietpi-software) ou la console les appliquent, et le service de scène pose les siennes lui-même"
-      fi
+      warn "session en cours : priorité $rt, mémoire $mem Ko — réglé, mais pas reçu par cette session"
+      info "$(rights_reception_hint "$USER_NAME")"
+      info "le service de scène, lui, pose ses propres limites"
     else
       warn "session en cours : priorité $rt, mémoire $mem Ko"
     fi
@@ -146,7 +145,7 @@ cmd_on() {
   done
   ((DRY_RUN)) && return
   ok "droits réglés pour $USER_NAME"
-  warn "ils valent pour les sessions ouvertes ensuite : se déconnecter puis se reconnecter (SSH compris)"
+  warn "ils valent pour les sessions ouvertes ensuite : $(rights_reception_hint "$USER_NAME")"
 }
 
 cmd_off() {
