@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
+#
+# Range la bibliothèque de sons de namfoop au bon endroit et l'écrit dans sa config.
+#
+#   namfoop-library init [--path DIR] [--config FILE] [--yes] [--dry-run]
+#   namfoop-library status [--config FILE]
+#
+# Une bibliothèque existante n'est jamais déplacée, vidée ni écrasée. Le script ne lit pas les sons ;
+# pour en ajouter, c'est namfoop lui-même : « namfoop import <zips ou dossier> ».
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/commun.sh
+. "$HERE/lib/commun.sh"
+
+usage() {
+  sed -n '6,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+TARGET=$(detect_target)
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/namfoop/config.toml"
+LIB=""
+CMD=""
+
+parse_common_args "$@"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+while (($#)); do
+  case $1 in
+    init | status)
+      [[ -z $CMD ]] || die "une seule commande à la fois : $1"
+      CMD=$1 ;;
+    --path) LIB=${2:?--path demande un dossier}; shift ;;
+    --config) CONFIG=${2:?--config demande un fichier}; shift ;;
+    -y | --yes) YES=1 ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
+  esac
+  shift
+done
+[[ -n $CMD ]] || { usage >&2; exit 2; }
+
+NAMFOOP=$(command -v namfoop || true)
+
+default_library() {
+  case $TARGET in
+    pi5-dietpi) echo /mnt/dietpi_userdata/namfoop/library ;;
+    *) echo "${XDG_DATA_HOME:-$HOME/.local/share}/namfoop/library" ;;
+  esac
+}
+
+# Valeur de la clé « library » de premier niveau dans la config (avant toute section), ou rien.
+config_library() {
+  [[ -r $CONFIG ]] || return 0
+  awk '
+    /^[[:space:]]*\[/ { exit }
+    /^[[:space:]]*library[[:space:]]*=/ {
+      sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*(#.*)?$/, "")
+      gsub(/^"|"$/, ""); print; exit
+    }' "$CONFIG"
+}
+
+# Écrit « library = "<chemin>" » en premier niveau de la config, après en avoir gardé une copie.
+write_config_library() {
+  local path=$1 tmp
+  run mkdir -p "$(dirname "$CONFIG")"
+  if [[ -e $CONFIG ]]; then
+    local backup
+    backup="$CONFIG.avant-namfoop-library.$(date +%Y%m%d-%H%M%S)"
+    local n=1 base=$backup
+    while [[ -e $backup ]]; do backup="$base.$((n++))"; done
+    run cp -p "$CONFIG" "$backup"
+    info "copie de la config : $backup"
+  fi
+  ((DRY_RUN)) && { info "[dry-run] library = \"$path\" dans $CONFIG"; return; }
+  tmp=$(mktemp "$CONFIG.XXXXXX")
+  if [[ -n $(config_library) ]]; then
+    # Remplace la ligne existante, en premier niveau seulement.
+    awk -v line="library = \"$path\"" '
+      !done && /^[[:space:]]*\[/ { top = 1 }
+      !done && !top && /^[[:space:]]*library[[:space:]]*=/ { print line; done = 1; next }
+      { print }' "$CONFIG" >"$tmp"
+  else
+    # Une clé de premier niveau peut aller en tête du fichier, avant toute section.
+    { printf 'library = "%s"\n' "$path"; [[ -e $CONFIG ]] && cat "$CONFIG"; } >"$tmp"
+  fi
+  mv "$tmp" "$CONFIG"
+}
+
+resolve_library() {
+  if [[ -n $LIB ]]; then
+    echo "$LIB"
+  elif [[ -n $(config_library) ]]; then
+    config_library
+  else
+    default_library
+  fi
+}
+
+absolute() {
+  case $1 in
+    /*) echo "$1" ;;
+    "~"*) echo "$HOME${1#\~}" ;;
+    *) echo "$(pwd)/$1" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- commandes
+
+cmd_init() {
+  local wanted current
+  wanted=$(absolute "${LIB:-$(default_library)}")
+  current=$(config_library)
+
+  if [[ -n $current && $current != "$wanted" ]]; then
+    warn "la config désigne déjà une autre bibliothèque : $current"
+    confirm "Désigner $wanted à la place (l'ancienne reste où elle est, intacte) ?" ||
+      die "rien changé : relance avec --path \"$current\" pour garder l'actuelle"
+  fi
+
+  if [[ -d $wanted ]]; then
+    ok "bibliothèque présente : $wanted"
+  else
+    local parent sudo=()
+    parent=$(dirname "$wanted")
+    while [[ ! -e $parent ]]; do parent=$(dirname "$parent"); done
+    [[ -w $parent ]] || sudo=(sudo)
+    run "${sudo[@]}" mkdir -p "$wanted"
+    if ((${#sudo[@]})); then run sudo chown "$(id -u):$(id -g)" "$wanted"; fi
+    ((DRY_RUN)) || ok "bibliothèque créée : $wanted"
+  fi
+
+  if [[ $current == "$wanted" ]]; then
+    ok "déjà écrite dans la config : $CONFIG"
+  else
+    write_config_library "$wanted"
+    ((DRY_RUN)) || ok "écrite dans la config : $CONFIG"
+  fi
+  info "pour y mettre tes sons : namfoop import <zips ou dossier>"
+}
+
+cmd_status() {
+  local current lib
+  current=$(config_library)
+  echo "namfoop-library — $TARGET"
+  if [[ -n $current ]]; then
+    ok "config : $CONFIG → library = \"$current\""
+  else
+    warn "la config ($CONFIG) ne désigne pas de bibliothèque : namfoop prend ./library s'il existe, sinon $(default_library)"
+  fi
+  lib=$(resolve_library)
+  if [[ -d $lib ]]; then
+    local nam wav
+    nam=$(find "$lib" -type f -iname '*.nam' 2>/dev/null | wc -l)
+    wav=$(find "$lib" -type f -iname '*.wav' -path '*/ir/*' 2>/dev/null | wc -l)
+    ok "bibliothèque : $lib ($nam modèles, $wav IR)"
+    [[ -w $lib ]] || warn "bibliothèque en lecture seule : calibrer ou enregistrer un preset échouera"
+  else
+    warn "bibliothèque absente : $lib (namfoop-library init)"
+  fi
+  if [[ -z $NAMFOOP ]]; then
+    warn "namfoop introuvable dans le PATH (scripts/namfoop-build)"
+  elif [[ -d $lib ]]; then
+    # Depuis un dossier neutre, pour vérifier que namfoop la trouve d'où qu'il soit lancé.
+    local err
+    if err=$(cd / && "$NAMFOOP" --config "$CONFIG" models 2>&1 >/dev/null); then
+      ok "namfoop la trouve depuis n'importe quel dossier"
+    else
+      err=$(printf '%s' "$err" | sed 's/^Error: //; s/^ *//' | paste -sd ' ')
+      if [[ $err == *vide* ]]; then
+        info "bibliothèque vide : pour y mettre tes sons, namfoop import <zips ou dossier>"
+      else
+        warn "namfoop ne la trouve pas depuis / : $err"
+      fi
+    fi
+  fi
+}
+
+case $CMD in
+  init) cmd_init ;;
+  status) cmd_status ;;
+esac
