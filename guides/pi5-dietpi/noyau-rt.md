@@ -34,7 +34,8 @@ de réveil, lui, est déjà de quelques microsecondes.
 
 ## Installer
 
-Depuis le Pi, connecté à internet (l'heure doit être juste, voir « Compiler et installer ») :
+`scripts/namfoop-pi on noyau` fait ces gestes (guide « Régler le Pi »). À la main, depuis le Pi,
+connecté à internet (l'heure doit être juste, voir « Compiler et installer ») :
 
 ```sh
 sudo apt update

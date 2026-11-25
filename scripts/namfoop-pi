@@ -1,0 +1,538 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
+#
+# Règle un Raspberry Pi 5 sous DietPi pour jouer namfoop sans craquement, et le défait.
+#
+#   namfoop-pi status                                 chaque réglage : posé ou non, actif ou non
+#   namfoop-pi on [RÉGLAGE…] [--scene] [--yes] [--dry-run]
+#   namfoop-pi off [RÉGLAGE…] [--yes] [--dry-run]     sans réglage nommé : tout ce que ce script a posé
+#   namfoop-pi install [--scene] [--yes] [--dry-run]  tout le Pi : namfoop, droits, bibliothèque, réglages
+#
+# Réglages : noyau, coeur, gouverneur, irq, swap, chauffe ; avec --scene, aussi radio (Wi-Fi et
+# Bluetooth coupés : SSH par câble seulement), leds, clavier.
+# Rien ne redémarre seul : les réglages du démarrage prennent effet au prochain « sudo reboot ».
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/commun.sh
+. "$HERE/lib/commun.sh"
+
+usage() {
+  sed -n '6,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+DEFAULT_SET=(noyau coeur gouverneur irq swap chauffe)
+SCENE_SET=(radio leds clavier)
+ALL_SET=("${DEFAULT_SET[@]}" "${SCENE_SET[@]}")
+
+CMD=status
+SCENE=0
+WANTED=()
+
+parse_common_args "$@"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+while (($#)); do
+  case $1 in
+    status | on | off | install) CMD=$1 ;;
+    --scene) SCENE=1 ;;
+    -y | --yes) YES=1 ;;
+    -h | --help) usage; exit 0 ;;
+    noyau | coeur | gouverneur | irq | swap | chauffe | radio | leds | clavier) WANTED+=("$1") ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
+  esac
+  shift
+done
+
+# NAMFOOP_PI_ROOT et NAMFOOP_TARGET servent aux essais : un faux système de fichiers, une fausse cible.
+ROOT=${NAMFOOP_PI_ROOT:-}
+TARGET=${NAMFOOP_TARGET:-$(detect_target)}
+BOOT="$ROOT/boot/firmware"
+[[ -d $BOOT ]] || BOOT="$ROOT/boot"
+CONFIG_TXT="$BOOT/config.txt"
+CMDLINE_TXT="$BOOT/cmdline.txt"
+DIETPI_TXT="$ROOT/boot/dietpi.txt"
+SET_SWAPFILE="$ROOT/boot/dietpi/func/dietpi-set_swapfile"
+RTIRQ_DEFAULT="$ROOT/etc/default/rtirq"
+STATE="$ROOT/var/lib/namfoop-install/pi"
+SYS="$ROOT/sys"
+
+RT_KERNEL_PKG=linux-image-rpi-v8-rt
+RT_KERNEL_IMG=kernel8_rt.img
+CORE_TOKENS=(isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2)
+RTIRQ_LIST='xhci usb snd'
+BLOCK_BEGIN='# >>> namfoop-install (scripts/namfoop-pi) : bloc géré par le script, « namfoop-pi off » le retire'
+BLOCK_END='# <<< namfoop-install'
+REBOOT_NEEDED=0
+
+# ---------------------------------------------------------------- outils
+
+as_root() {
+  if ((EUID == 0)); then run "$@"; else run sudo "$@"; fi
+}
+
+# Copie un fichier avant de le modifier : FICHIER.avant-namfoop-pi.<date>[.n], une fois par passage.
+declare -A BACKED_UP=()
+backup() {
+  local f=$1 b
+  [[ -e $f ]] || return 0
+  [[ -n ${BACKED_UP[$f]:-} ]] && return 0
+  BACKED_UP[$f]=1
+  b="$f.avant-namfoop-pi.$(date +%Y%m%d-%H%M%S)"
+  local n=1 base=$b
+  while [[ -e $b ]]; do b="$base.$n"; n=$((n + 1)); done
+  as_root cp -p "$f" "$b"
+  ((DRY_RUN)) || info "copie : $b"
+}
+
+# Remplace le contenu d'un fichier (lu sur l'entrée standard), en root si besoin.
+write_file() {
+  local f=$1 content
+  content=$(cat)
+  if ((DRY_RUN)); then
+    info "[dry-run] écrire $f"
+    return
+  fi
+  printf '%s\n' "$content" | as_root tee "$f" >/dev/null
+}
+
+state_get() { cat "$STATE/$1" 2>/dev/null || true; }
+state_set() {
+  ((DRY_RUN)) && return
+  as_root mkdir -p "$STATE"
+  printf '%s\n' "$2" | as_root tee "$STATE/$1" >/dev/null
+}
+state_del() { [[ -e $STATE/$1 ]] && as_root rm -f "$STATE/$1"; return 0; }
+
+pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
+
+apt_install() {
+  pkg_installed "$1" && return 0
+  ensure_clock "$HERE/.."
+  as_root apt-get update -q
+  as_root apt-get install -y -q "$1"
+}
+
+# ---------------------------------------------------------------- config.txt : un bloc à nous, à la fin
+
+# Les lignes de notre bloc. Dans config.txt, la dernière valeur d'un réglage l'emporte : le bloc est
+# à la fin, sous [all], et le retirer rend les réglages d'avant.
+block_lines() {
+  [[ -r $CONFIG_TXT ]] || return 0
+  awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '$0 == b {inb=1; next} $0 == e {inb=0; next} inb && $0 != "[all]"' "$CONFIG_TXT"
+}
+
+block_has() { block_lines | grep -qxF "$1"; }
+
+block_write() {
+  local lines=("$@") body
+  body=$(awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '$0 == b {inb=1; next} $0 == e {inb=0; next} !inb' "$CONFIG_TXT")
+  # Pas de lignes vides en fin de fichier à chaque passage.
+  body=$(printf '%s\n' "$body" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+  backup "$CONFIG_TXT"
+  {
+    printf '%s\n' "$body"
+    if ((${#lines[@]})); then
+      printf '\n%s\n[all]\n' "$BLOCK_BEGIN"
+      printf '%s\n' "${lines[@]}"
+      printf '%s\n' "$BLOCK_END"
+    fi
+  } | write_file "$CONFIG_TXT"
+  REBOOT_NEEDED=1
+}
+
+block_add() {
+  local current=() l missing=0
+  mapfile -t current < <(block_lines)
+  for l in "$@"; do
+    block_has "$l" || { current+=("$l"); missing=1; }
+  done
+  ((missing)) && block_write "${current[@]}"
+  return 0
+}
+
+block_remove() {
+  local kept=() l r drop changed=0
+  while IFS= read -r l; do
+    drop=0
+    for r in "$@"; do [[ $l == "$r" ]] && drop=1; done
+    if ((drop)); then changed=1; else kept+=("$l"); fi
+  done < <(block_lines)
+  ((changed)) && block_write "${kept[@]+"${kept[@]}"}"
+  return 0
+}
+
+# Une ligne active (hors commentaire) de config.txt, n'importe où, posée à la main ou par nous.
+config_has() { [[ -r $CONFIG_TXT ]] && grep -qxF "$1" "$CONFIG_TXT"; }
+
+# La dernière valeur d'un réglage de config.txt : celle que le Pi retient.
+config_last() { { sed -n "s/^$1=//p" "$CONFIG_TXT" 2>/dev/null || true; } | tail -n1; }
+
+# ---------------------------------------------------------------- cmdline.txt : une seule ligne
+
+cmdline_tokens() { [[ -r $CMDLINE_TXT ]] && tr ' ' '\n' <"$CMDLINE_TXT" | sed '/^$/d'; }
+
+# Vrai si le paramètre (clé avant « = ») est présent, avec n'importe quelle valeur.
+cmdline_has_key() { cmdline_tokens | grep -q "^${1%%=*}\(=\|$\)"; }
+
+# Ajoute les paramètres absents et note ceux qu'on a ajoutés (pour ne retirer qu'eux).
+cmdline_add() {
+  local name=$1 t added=()
+  shift
+  for t in "$@"; do
+    if cmdline_has_key "$t"; then
+      cmdline_tokens | grep -qxF "$t" || warn "${t%%=*} déjà réglé autrement dans cmdline.txt : laissé tel quel"
+    else
+      added+=("$t")
+    fi
+  done
+  ((${#added[@]})) || return 0
+  backup "$CMDLINE_TXT"
+  printf '%s %s\n' "$(tr -d '\n' <"$CMDLINE_TXT" | sed 's/ *$//')" "${added[*]}" | write_file "$CMDLINE_TXT"
+  state_set "cmdline-$name" "${added[*]}"
+  REBOOT_NEEDED=1
+}
+
+cmdline_remove() {
+  local name=$1 recorded t line
+  recorded=$(state_get "cmdline-$name")
+  [[ -n $recorded ]] || return 0
+  line=" $(tr -d '\n' <"$CMDLINE_TXT") "
+  for t in $recorded; do line=${line// "$t" / }; done
+  line=$(printf '%s' "$line" | sed 's/^ *//; s/ *$//; s/  */ /g')
+  backup "$CMDLINE_TXT"
+  printf '%s\n' "$line" | write_file "$CMDLINE_TXT"
+  state_del "cmdline-$name"
+  REBOOT_NEEDED=1
+}
+
+# ---------------------------------------------------------------- réglages
+# Chaque réglage a sa ligne d'état (<r>_status : 0 si posé), sa pose (<r>_on) et son retrait (<r>_off).
+
+# noyau : le paquet temps réel de Raspberry Pi, choisi au démarrage par config.txt.
+noyau_desc="noyau temps réel ($RT_KERNEL_PKG)"
+noyau_status() {
+  local posed=1 active=0
+  config_has "kernel=$RT_KERNEL_IMG" && posed=0
+  kernel_is_rt && active=1
+  report "$noyau_desc" "$posed" "$active" "$(uname -r)"
+  return "$posed"
+}
+noyau_on() {
+  apt_install "$RT_KERNEL_PKG"
+  if ((!DRY_RUN)) && [[ ! -e $BOOT/$RT_KERNEL_IMG ]]; then
+    die "$BOOT/$RT_KERNEL_IMG absent après l'installation du paquet : config.txt laissé tel quel (le Pi ne démarrerait plus)"
+  fi
+  block_add "kernel=$RT_KERNEL_IMG"
+}
+noyau_off() {
+  block_has "kernel=$RT_KERNEL_IMG" || return 0
+  block_remove "kernel=$RT_KERNEL_IMG"
+  if config_has "kernel=$RT_KERNEL_IMG"; then
+    warn "une ligne « kernel=$RT_KERNEL_IMG » posée à la main reste dans $CONFIG_TXT : la retirer pour revenir au noyau standard"
+  fi
+  info "le paquet $RT_KERNEL_PKG reste installé (sans effet sans la ligne kernel=) ; le retirer : guide du noyau temps réel"
+}
+
+# coeur : le cœur 3 réservé au son ; namfoop s'y épingle avec --cpu 3.
+coeur_desc="cœur 3 réservé au son (${CORE_TOKENS[*]})"
+coeur_status() {
+  local posed=1 active=0 isolated
+  cmdline_has_key isolcpus && posed=0
+  isolated=$(cat "$SYS/devices/system/cpu/isolated" 2>/dev/null || true)
+  [[ -n $isolated ]] && active=1
+  report "$coeur_desc" "$posed" "$active" "cœur(s) isolé(s) : ${isolated:-aucun}"
+  return "$posed"
+}
+coeur_on() { cmdline_add coeur "${CORE_TOKENS[@]}"; }
+coeur_off() { cmdline_remove coeur; }
+
+# gouverneur : fréquence fixe. DietPi l'applique à chaque démarrage depuis dietpi.txt.
+gouverneur_desc="gouverneur performance"
+governors_now() {
+  cat "$SYS"/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor 2>/dev/null | sort -u | xargs || true
+}
+dietpi_governor() { { sed -n 's/^CONFIG_CPU_GOVERNOR=//p' "$DIETPI_TXT" 2>/dev/null || true; } | tail -n1; }
+set_dietpi_governor() {
+  [[ -r $DIETPI_TXT ]] || return 0
+  backup "$DIETPI_TXT"
+  if grep -q '^CONFIG_CPU_GOVERNOR=' "$DIETPI_TXT"; then
+    sed "s/^CONFIG_CPU_GOVERNOR=.*/CONFIG_CPU_GOVERNOR=$1/" "$DIETPI_TXT" | write_file "$DIETPI_TXT"
+  else
+    { cat "$DIETPI_TXT"; echo "CONFIG_CPU_GOVERNOR=$1"; } | write_file "$DIETPI_TXT"
+  fi
+}
+set_governor_now() {
+  local f
+  for f in "$SYS"/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+    [[ -e $f ]] || continue
+    if ((DRY_RUN)); then info "[dry-run] $1 > $f"; else echo "$1" | as_root tee "$f" >/dev/null; fi
+  done
+}
+gouverneur_status() {
+  local posed=1 active=0 now
+  [[ $(dietpi_governor) == performance ]] && posed=0
+  now=$(governors_now)
+  [[ $now == performance ]] && active=1
+  report "$gouverneur_desc" "$posed" "$active" "maintenant : ${now:-non exposé}"
+  return "$posed"
+}
+gouverneur_on() {
+  local before
+  before=$(dietpi_governor)
+  if [[ $before != performance ]]; then
+    state_set gouverneur "${before:-schedutil}"
+    set_dietpi_governor performance
+  fi
+  [[ $(governors_now) == performance ]] || set_governor_now performance
+}
+gouverneur_off() {
+  local before
+  before=$(state_get gouverneur)
+  [[ -n $before ]] || return 0
+  set_dietpi_governor "$before"
+  set_governor_now "$before"
+  state_del gouverneur
+}
+
+# irq : les interruptions USB au-dessus du thread audio (FIFO 80), par rtirq.
+irq_desc="interruptions USB prioritaires (rtirq : $RTIRQ_LIST)"
+rtirq_list() { { sed -n 's/^RTIRQ_NAME_LIST="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$RTIRQ_DEFAULT" 2>/dev/null || true; } | tail -n1; }
+irq_status() {
+  local posed=1 active=0
+  pkg_installed rtirq-init && [[ $(rtirq_list) == "$RTIRQ_LIST" ]] && systemctl is-enabled --quiet rtirq 2>/dev/null && posed=0
+  systemctl is-active --quiet rtirq 2>/dev/null && active=1
+  report "$irq_desc" "$posed" "$active" ""
+  return "$posed"
+}
+irq_on() {
+  apt_install rtirq-init
+  local before enabled=0
+  before=$(rtirq_list)
+  systemctl is-enabled --quiet rtirq 2>/dev/null && enabled=1
+  # L'état d'avant : la liste, et si rtirq était déjà lancé au démarrage.
+  state_set irq "$before"$'\n'"$enabled"
+  if [[ $before != "$RTIRQ_LIST" ]]; then
+    backup "$RTIRQ_DEFAULT"
+    if grep -q '^RTIRQ_NAME_LIST=' "$RTIRQ_DEFAULT" 2>/dev/null; then
+      sed "s/^RTIRQ_NAME_LIST=.*/RTIRQ_NAME_LIST=\"$RTIRQ_LIST\"/" "$RTIRQ_DEFAULT" | write_file "$RTIRQ_DEFAULT"
+    else
+      { cat "$RTIRQ_DEFAULT" 2>/dev/null || true; echo "RTIRQ_NAME_LIST=\"$RTIRQ_LIST\""; } | write_file "$RTIRQ_DEFAULT"
+    fi
+  fi
+  as_root systemctl enable rtirq
+  as_root systemctl restart rtirq
+}
+irq_off() {
+  [[ -e $STATE/irq ]] || return 0
+  local before enabled
+  before=$(state_get irq | sed -n 1p)
+  enabled=$(state_get irq | sed -n 2p)
+  if [[ $(rtirq_list) != "$before" ]]; then
+    backup "$RTIRQ_DEFAULT"
+    sed "s/^RTIRQ_NAME_LIST=.*/RTIRQ_NAME_LIST=\"$before\"/" "$RTIRQ_DEFAULT" | write_file "$RTIRQ_DEFAULT"
+  fi
+  if [[ $enabled == 1 ]]; then
+    as_root systemctl restart rtirq
+    info "rtirq reste lancé au démarrage, comme avant, avec sa liste d'avant ($before)"
+  else
+    as_root systemctl stop rtirq || true
+    as_root systemctl disable rtirq
+    info "rtirq-init reste installé, arrêté : les interruptions reprennent leur priorité par défaut"
+  fi
+  state_del irq
+}
+
+# swap : rien n'écrit sur la carte SD à l'improviste ; namfoop verrouille déjà sa mémoire.
+swap_desc="swap coupé"
+swap_active() { [[ -n $(swapon --show --noheadings 2>/dev/null) ]]; }
+swap_status() {
+  local posed=1 active=0
+  swap_active || { posed=0; active=1; }
+  report "$swap_desc" "$posed" "$active" ""
+  return "$posed"
+}
+swap_on() {
+  swap_active || return 0
+  [[ -x $SET_SWAPFILE ]] || die "$SET_SWAPFILE absent : couper le swap avec dietpi-drive_manager"
+  state_set swap "1"
+  as_root "$SET_SWAPFILE" 0
+}
+swap_off() {
+  [[ -e $STATE/swap ]] || return 0
+  [[ -x $SET_SWAPFILE ]] || die "$SET_SWAPFILE absent : remettre le swap avec dietpi-drive_manager"
+  as_root "$SET_SWAPFILE" 1
+  state_del swap
+}
+
+# chauffe : le Pi ne ralentit qu'à 85 °C, la limite du constructeur (ventilateur actif conseillé).
+chauffe_desc="limite de température 85 °C (temp_limit)"
+chauffe_status() {
+  local posed=1 active=0 now
+  [[ $(config_last temp_limit) == 85 ]] && posed=0
+  now=$(vcgencmd get_config temp_limit 2>/dev/null | cut -d= -f2 || true)
+  [[ $now == 85 ]] && active=1
+  report "$chauffe_desc" "$posed" "$active" "maintenant : ${now:-inconnue}"
+  return "$posed"
+}
+chauffe_on() { block_add temp_limit=85; }
+chauffe_off() { block_remove temp_limit=85; }
+
+# radio : Wi-Fi et Bluetooth coupés, moins d'interruptions ; SSH par câble seulement.
+radio_desc="Wi-Fi et Bluetooth coupés"
+radio_lines=(dtoverlay=disable-wifi dtoverlay=disable-bt)
+radio_status() {
+  local posed=1 active=0
+  config_has dtoverlay=disable-wifi && posed=0
+  [[ ! -e $SYS/class/net/wlan0 ]] && active=1
+  report "$radio_desc" "$posed" "$active" ""
+  return "$posed"
+}
+# Couper le Wi-Fi d'une session SSH qui passe par lui couperait l'accès au Pi : refuser d'abord.
+radio_check() {
+  local client dev
+  client=${SSH_CONNECTION:-}
+  client=${client%% *}
+  if [[ -n $client ]]; then
+    dev=$(ip route get "$client" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)
+    [[ $dev == wl* ]] && die "cette session SSH passe par le Wi-Fi ($dev) : le couper te couperait du Pi ; brancher un câble réseau d'abord"
+  fi
+  return 0
+}
+radio_on() {
+  radio_check
+  block_add "${radio_lines[@]}"
+}
+radio_off() { block_remove "${radio_lines[@]}"; }
+
+# leds : les voyants ne clignotent plus.
+leds_desc="voyants éteints"
+leds_lines=(dtparam=act_led_trigger=none dtparam=pwr_led_trigger=none)
+leds_status() {
+  local posed=1
+  config_has dtparam=act_led_trigger=none && posed=0
+  report "$leds_desc" "$posed" "$((1 - posed))" ""
+  return "$posed"
+}
+leds_on() { block_add "${leds_lines[@]}"; }
+leds_off() { block_remove "${leds_lines[@]}"; }
+
+# clavier : interrogé toutes les 64 ms au lieu de 10, moins d'interruptions ; il réagit un peu moins vite.
+clavier_desc="clavier interrogé moins souvent (usbhid.kbpoll=64)"
+clavier_status() {
+  local posed=1 active=0
+  cmdline_has_key usbhid.kbpoll && posed=0
+  [[ $(cat "$SYS/module/usbhid/parameters/kbpoll" 2>/dev/null) == 64 ]] && active=1
+  report "$clavier_desc" "$posed" "$active" ""
+  return "$posed"
+}
+clavier_on() { cmdline_add clavier usbhid.kbpoll=64; }
+clavier_off() { cmdline_remove clavier; }
+
+# Une ligne d'état : posé (0) ou non, actif (1) ou non.
+report() {
+  local desc=$1 posed=$2 active=$3 detail=$4
+  detail=${detail:+ — $detail}
+  if ((posed == 0 && active)); then
+    ok "$desc$detail"
+  elif ((posed == 0)); then
+    warn "$desc : posé, actif au prochain démarrage$detail"
+  elif ((active)); then
+    info "· $desc : actif, mais pas posé par ce script$detail"
+  else
+    info "· $desc : pas posé$detail"
+  fi
+}
+
+# ---------------------------------------------------------------- commandes
+
+require_pi() {
+  [[ $TARGET == pi5-dietpi ]] || die "ce script règle un Raspberry Pi 5 sous DietPi (machine reconnue : $TARGET)"
+  [[ -r $CONFIG_TXT && -r $CMDLINE_TXT ]] || die "$CONFIG_TXT ou $CMDLINE_TXT introuvable"
+}
+
+selection() {
+  if ((${#WANTED[@]})); then
+    printf '%s\n' "${WANTED[@]}"
+  elif [[ $CMD == off ]]; then
+    printf '%s\n' "${ALL_SET[@]}"
+  else
+    printf '%s\n' "${DEFAULT_SET[@]}"
+    ((SCENE)) && printf '%s\n' "${SCENE_SET[@]}"
+  fi
+  return 0
+}
+
+cmd_status() {
+  require_pi
+  echo "namfoop-pi — $TARGET"
+  local r
+  for r in "${ALL_SET[@]}"; do
+    [[ $r == radio ]] && info "profil scène (--scene) :"
+    "${r}_status" || true
+  done
+}
+
+cmd_on() {
+  require_pi
+  local todo=() r desc
+  for r in $(selection); do
+    "${r}_status" >/dev/null 2>&1 || todo+=("$r")
+  done
+  if ((${#todo[@]} == 0)); then
+    ok "réglages déjà posés — rien à faire"
+    return
+  fi
+  [[ " ${todo[*]} " == *" radio "* ]] && radio_check
+  info "à poser :"
+  for r in "${todo[@]}"; do
+    desc="${r}_desc"
+    info "  - $r : ${!desc}"
+  done
+  confirm "Poser ces réglages ?" || die "rien changé"
+  for r in "${todo[@]}"; do
+    "${r}_on"
+    desc="${r}_desc"
+    ((DRY_RUN)) || ok "${!desc}"
+  done
+  finish
+}
+
+cmd_off() {
+  require_pi
+  local r
+  confirm "Retirer les réglages ($(selection | xargs)) posés par ce script ?" || die "rien changé"
+  for r in $(selection); do "${r}_off"; done
+  ((DRY_RUN)) || ok "réglages retirés ; les fichiers d'avant restent copiés à côté des originaux"
+  finish
+}
+
+finish() {
+  if ((REBOOT_NEEDED && !DRY_RUN)); then
+    warn "redémarrer pour appliquer les réglages du démarrage : sudo reboot (le script ne redémarre jamais seul)"
+  fi
+  return 0
+}
+
+cmd_install() {
+  require_pi
+  ((EUID != 0)) || die "lancer en tant qu'utilisateur (dietpi), sans sudo : le script demande sudo quand il le faut"
+  local common=()
+  ((YES)) && common+=(--yes)
+  ((DRY_RUN)) && common+=(--dry-run)
+  info "1/4 namfoop"
+  "$HERE/namfoop-build" install "${common[@]+"${common[@]}"}"
+  info "2/4 droits temps réel"
+  "$HERE/namfoop-rights" on "${common[@]+"${common[@]}"}"
+  info "3/4 bibliothèque de sons"
+  "$HERE/namfoop-library" init "${common[@]+"${common[@]}"}"
+  info "4/4 réglages du Pi"
+  cmd_on
+  info "après le redémarrage : scripts/namfoop-doctor --measure --load"
+}
+
+case $CMD in
+  status) cmd_status ;;
+  on) cmd_on ;;
+  off) cmd_off ;;
+  install) cmd_install ;;
+esac

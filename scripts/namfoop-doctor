@@ -81,7 +81,7 @@ check_kernel() {
     fi
   elif ((IS_PI)); then
     bad "noyau standard ($(uname -r)) : le Pi de scène doit tourner sur un noyau PREEMPT_RT" \
-      "voir guides/pi5-dietpi (noyau temps réel)"
+      "scripts/namfoop-pi on noyau, puis redémarrer (guides/pi5-dietpi/noyau-rt.md)"
   else
     note "noyau standard ($(uname -r)) : PREEMPT_RT est facultatif sur ce poste" \
       "voir guides/endeavouros (noyau temps réel en option)"
@@ -143,7 +143,7 @@ check_cpu() {
     good "gouverneur : $gov"
   else
     local fix="sudo cpupower frequency-set -g performance (jusqu'au prochain redémarrage)"
-    ((IS_PI)) && fix="voir guides/pi5-dietpi (réglages audio du Pi)"
+    ((IS_PI)) && fix="scripts/namfoop-pi on gouverneur"
     is_arch && fix="$fix ; en mode scène, scripts/namfoop-scene le fait"
     bad "gouverneur : $gov — la fréquence redescend entre deux buffers et la charge fait des pics" "$fix"
   fi
@@ -163,7 +163,7 @@ check_cpu() {
       fi
     done
   elif ((IS_PI)); then
-    bad "aucun cœur réservé au son" "voir guides/pi5-dietpi (isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2)"
+    bad "aucun cœur réservé au son" "scripts/namfoop-pi on coeur, puis redémarrer (isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2)"
   else
     note "aucun cœur réservé au son (facultatif sur ce poste)"
   fi
@@ -205,6 +205,11 @@ check_pi() {
       note "courant USB : limité à 600 mA si le Pi ne reconnaît pas l'alimentation officielle" \
         "carte son et pédalier alimentés par l'USB : alimentation officielle 5 V / 5 A, ou usb_max_current_enable=1 avec elle seulement"
     fi
+  fi
+  if [[ -n $(swapon --show --noheadings 2>/dev/null) ]]; then
+    bad "swap actif : le système peut écrire sur la carte SD à l'improviste" "scripts/namfoop-pi on swap"
+  else
+    good "swap coupé"
   fi
   if [[ $(findmnt -n -o FSTYPE / 2>/dev/null) == overlay ]]; then
     good "système protégé en écriture (overlay)"
