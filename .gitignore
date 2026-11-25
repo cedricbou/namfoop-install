@@ -6,3 +6,4 @@ nam/
 *.zip
 # Builds locaux de namfoop
 build/
+*.whl
