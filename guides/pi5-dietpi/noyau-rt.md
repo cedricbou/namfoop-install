@@ -24,10 +24,13 @@ ci-dessus montre qu'il suffit largement.
 ### « v8 » ou « 2712 »
 
 Le Pi 5 a deux noyaux standard : « v8 », commun aux Pi 64 bits, avec des pages mémoire de 4 Ko, et
-« 2712 », propre au Pi 5, avec des pages de 16 Ko, un peu plus rapide en calcul. Le paquet temps réel
-utilisé ici est un « v8 ». Le diagnostic le signale à titre d'information. Si un paquet temps réel
-« 2712 » est publié, le comparer avec `namfoop bench` (le coût de calcul des modèles) et avec la
-mesure du diagnostic avant d'en changer.
+« 2712 », propre au Pi 5, avec des pages de 16 Ko, un peu plus rapide en calcul. Raspberry Pi ne
+publie de version temps réel que du « v8 » (`linux-image-rpi-v8-rt` ; vérifié le 25 novembre 2026,
+noyau 6.18.60). Le diagnostic le signale à titre d'information.
+
+Un noyau temps réel « 2712 » demanderait de le compiler soi-même (deuxième voie). Ça ne vaut la
+peine que si `namfoop bench` montre que le calcul des modèles manque de marge sur le Pi : le retard
+de réveil, lui, est déjà de quelques microsecondes.
 
 ## Installer
 
@@ -37,6 +40,10 @@ Depuis le Pi, connecté à internet (l'heure doit être juste, voir « Compiler 
 sudo apt update
 sudo apt install linux-image-rpi-v8-rt
 ```
+
+Le paquet dépose `kernel8_rt.img` dans `/boot/firmware`, à côté de `kernel_2712.img`, le noyau
+standard du Pi 5, qui reste installé et sur lequel le Pi démarre tant qu'on ne lui dit rien d'autre.
+Pas d'initramfs : rien d'autre à régler.
 
 Puis dire au Pi de démarrer dessus : ajouter à la fin de `/boot/firmware/config.txt` (garder une
 copie avant : `sudo cp -p /boot/firmware/config.txt /boot/firmware/config.txt.avant-noyau-rt`) :
@@ -64,8 +71,9 @@ Dans cet ordre, pour toujours garder un noyau qui démarre :
 
 1. retirer (ou commenter avec `#`) la ligne `kernel=kernel8_rt.img` de `/boot/firmware/config.txt` ;
 2. redémarrer : `uname -r` ne finit plus par `-rt` ;
-3. seulement ensuite, si on veut, désinstaller : `sudo apt purge linux-image-rpi-v8-rt`.
+3. seulement ensuite, si on veut, désinstaller : `sudo apt purge linux-image-rpi-v8-rt`, puis
+   `sudo apt autoremove --purge` pour la version du noyau qu'il avait installée.
 
 **Si le Pi ne démarre plus** sur le noyau temps réel : la première partie de la carte SD (en FAT) se lit
 sur n'importe quel ordinateur. Y ouvrir `config.txt` et retirer la ligne `kernel=…` : le Pi
-redémarre sur son noyau standard.
+redémarre sur son noyau standard (`kernel_2712.img`).
