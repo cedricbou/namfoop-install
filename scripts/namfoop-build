@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
+#
+# Installe namfoop d'une commande, dans une version précise : dépendances du système, Rust (rustup),
+# source d'un tag de namfoop, compilation, installation du binaire.
+#
+#   namfoop-build [install] [--version vX.Y.Z] [--prefix DIR] [--portable] [--jobs N] [--yes] [--dry-run]
+#   namfoop-build status     ce qui est installé, et ce qui manque, sans rien changer
+#   namfoop-build deps       installe seulement les dépendances du système
+#
+# Relancer sans rien changer ne recompile rien. Changer de version (ou de --portable) recompile et
+# remplace le binaire.
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/commun.sh
+. "$HERE/lib/commun.sh"
+
+usage() {
+  sed -n '6,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+VERSION=$(default_namfoop_version "$HERE/..")
+PREFIX=""
+PORTABLE=0
+JOBS=""
+YES=0
+CMD=install
+
+parse_common_args "$@"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+while (($#)); do
+  case $1 in
+    install | status | deps) CMD=$1 ;;
+    --version) VERSION=${2:?--version demande une valeur (ex. v0.8.0)}; shift ;;
+    --prefix) PREFIX=${2:?--prefix demande un dossier}; shift ;;
+    --portable) PORTABLE=1 ;;
+    --jobs) JOBS=${2:?--jobs demande un nombre}; shift ;;
+    -y | --yes) YES=1 ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
+  esac
+  shift
+done
+[[ $VERSION == v* ]] || VERSION="v$VERSION"
+
+TARGET=$(detect_target)
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/namfoop-install"
+SRC="$CACHE/src"
+STATE="$CACHE/installed"
+REPO_URL=${NAMFOOP_REPO_URL:-https://github.com/cedricbou/namfoop.git}
+export PATH="$HOME/.cargo/bin:$PATH"
+
+if [[ -z $PREFIX ]]; then
+  case $TARGET in
+    pi5-dietpi) PREFIX=/usr/local ;;
+    *) PREFIX="$HOME/.local" ;;
+  esac
+fi
+BIN="$PREFIX/bin/namfoop"
+MODE=$([[ $PORTABLE == 1 ]] && echo portable || echo natif)
+WANTED="$VERSION $MODE $(uname -m)"
+
+# ---------------------------------------------------------------- dépendances du système
+
+deps_packages() {
+  case $TARGET in
+    endeavouros | arch) echo base-devel git rustup alsa-lib ;;
+    pi5-dietpi | ubuntu | debian) echo build-essential pkg-config git curl ca-certificates libasound2-dev ;;
+    *) return 1 ;;
+  esac
+}
+
+deps_missing() {
+  local p
+  for p in $(deps_packages); do
+    case $TARGET in
+      endeavouros | arch)
+        # base-devel est un groupe sur les anciennes installations, un paquet sur les récentes.
+        pacman -Qq "$p" &>/dev/null || pacman -Qqg "$p" &>/dev/null || echo "$p" ;;
+      *) dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || echo "$p" ;;
+    esac
+  done
+}
+
+sudo_cmd() {
+  if ((EUID == 0)); then "$@"; else sudo "$@"; fi
+}
+
+install_deps() {
+  deps_packages >/dev/null || die "système non reconnu ($TARGET) : installe à la main un compilateur C++20, pkg-config, git, rustup et les en-têtes ALSA"
+  local missing
+  missing=$(deps_missing | xargs)
+  if [[ -z $missing ]]; then
+    ok "dépendances du système présentes"
+    return
+  fi
+  info "paquets à installer : $missing"
+  confirm "Installer ces paquets ?" || die "dépendances manquantes : $missing"
+  ensure_clock
+  case $TARGET in
+    endeavouros | arch)
+      # shellcheck disable=SC2086  # liste de paquets volontairement découpée
+      run sudo_cmd pacman -S --needed --noconfirm $missing ;;
+    *)
+      run sudo_cmd apt-get update -q
+      # shellcheck disable=SC2086  # liste de paquets volontairement découpée
+      run sudo_cmd apt-get install -y -q $missing ;;
+  esac
+}
+
+# rustup installe tout seul la version de Rust fixée par le rust-toolchain.toml de namfoop.
+install_rustup() {
+  if command -v rustup &>/dev/null; then
+    ok "rustup présent"
+    return
+  fi
+  case $TARGET in
+    endeavouros | arch) die "rustup absent alors que le paquet est installé : ouvre un nouveau terminal" ;;
+  esac
+  info "rustup absent : installation par le script officiel (https://sh.rustup.rs), dans ~/.cargo"
+  confirm "Installer rustup ?" || die "rustup est nécessaire pour compiler namfoop"
+  if ((DRY_RUN)); then
+    info "[dry-run] curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none"
+  else
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+  fi
+}
+
+# ---------------------------------------------------------------- source et compilation
+
+fetch_source() {
+  ensure_clock
+  if [[ -d $SRC/.git ]]; then
+    info "source de namfoop : $SRC, passage à $VERSION"
+    run git -C "$SRC" fetch -q --depth 1 origin "refs/tags/$VERSION:refs/tags/$VERSION"
+    run git -C "$SRC" -c advice.detachedHead=false checkout -q "$VERSION"
+  else
+    info "clone de namfoop $VERSION dans $SRC"
+    run mkdir -p "$CACHE"
+    run git -c advice.detachedHead=false clone -q --depth 1 --branch "$VERSION" "$REPO_URL" "$SRC"
+  fi
+  run git -C "$SRC" submodule update -q --init --recursive --depth 1
+}
+
+check_memory() {
+  # La compilation finale (LTO complète) demande plusieurs Go : sur un Pi 5 de 4 Go, un seul job.
+  local avail_kb
+  avail_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  if [[ -z $JOBS ]] && ((avail_kb > 0 && avail_kb < 3 * 1024 * 1024)); then
+    JOBS=1
+    warn "moins de 3 Go de mémoire libre : compilation sur un seul job (plus lente, mais elle aboutit)"
+  fi
+}
+
+build() {
+  check_memory
+  local args=(build --release --locked -p namfoop)
+  [[ -n $JOBS ]] && args+=(--jobs "$JOBS")
+  info "compilation de namfoop $VERSION ($MODE) : quelques minutes, davantage sur le Pi"
+  if ((DRY_RUN)); then
+    info "[dry-run] (cd $SRC && NAMFOOP_NATIVE=$((1 - PORTABLE)) cargo ${args[*]})"
+  else
+    (cd "$SRC" && NAMFOOP_NATIVE=$((1 - PORTABLE)) CARGO_TARGET_DIR="$CACHE/target" cargo "${args[@]}")
+  fi
+}
+
+install_bin() {
+  local built="$CACHE/target/release/namfoop" sudo=()
+  if [[ ! -w $PREFIX ]] && [[ ! -w $PREFIX/bin ]]; then sudo=(sudo_cmd); fi
+  run "${sudo[@]}" install -D -m 0755 "$built" "$BIN"
+  if ((!DRY_RUN)); then
+    printf '%s\n' "$WANTED" >"$STATE"
+  fi
+  ((DRY_RUN)) || ok "installé : $BIN"
+}
+
+installed_version() {
+  [[ -x $BIN ]] && "$BIN" --version 2>/dev/null | awk '{print "v" $2}'
+}
+
+check_path() {
+  case ":$PATH:" in
+    *":$PREFIX/bin:"*) ;;
+    *) warn "$PREFIX/bin n'est pas dans ton PATH : ajoute « export PATH=\"$PREFIX/bin:\$PATH\" » à ton ~/.bashrc" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- commandes
+
+cmd_status() {
+  echo "namfoop-build — $TARGET, $(uname -m)"
+  if deps_packages >/dev/null; then
+    local missing
+    missing=$(deps_missing | xargs)
+    if [[ -z $missing ]]; then ok "dépendances du système"; else warn "paquets manquants : $missing"; fi
+  else
+    warn "système non reconnu : dépendances non vérifiées"
+  fi
+  if command -v rustup &>/dev/null; then ok "rustup"; else warn "rustup absent"; fi
+  local v
+  v=$(installed_version || true)
+  if [[ -n $v ]]; then
+    ok "namfoop $v installé : $BIN ($(cat "$STATE" 2>/dev/null || echo 'installé hors de ce script'))"
+  else
+    warn "namfoop absent de $BIN"
+  fi
+  info "version visée : $VERSION ($MODE)"
+  if [[ -n $v ]] && [[ $(cat "$STATE" 2>/dev/null) == "$WANTED" ]] && [[ $v == "$VERSION" ]]; then
+    ok "à jour"
+  else
+    info "à faire : namfoop-build install --version $VERSION$([[ $PORTABLE == 1 ]] && echo ' --portable')"
+  fi
+}
+
+cmd_install() {
+  if [[ $(installed_version || true) == "$VERSION" ]] && [[ $(cat "$STATE" 2>/dev/null) == "$WANTED" ]]; then
+    ok "namfoop $VERSION ($MODE) déjà installé : $BIN — rien à faire"
+    check_path
+    return
+  fi
+  install_deps
+  install_rustup
+  fetch_source
+  build
+  install_bin
+  if ((!DRY_RUN)); then
+    local v
+    v=$(installed_version)
+    [[ $v == "$VERSION" ]] || die "le binaire installé répond $v au lieu de $VERSION"
+    ok "namfoop --version : $v"
+  fi
+  check_path
+}
+
+case $CMD in
+  status) cmd_status ;;
+  deps) install_deps; install_rustup ;;
+  install) cmd_install ;;
+esac
