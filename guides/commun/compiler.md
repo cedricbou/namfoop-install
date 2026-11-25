@@ -48,6 +48,41 @@ en est, sans rien changer :
 scripts/namfoop-build status
 ```
 
+## Les droits temps réel
+
+En fin d'installation, le script propose de donner à ton utilisateur les droits dont namfoop a
+besoin pour jouer sans craquement : passer son thread audio en priorité temps réel (FIFO 80),
+verrouiller sa mémoire, accéder à la carte son et au MIDI, et sur le Pi lire l'alimentation et la
+température. Sans eux, namfoop joue quand même, mais retombe sur une priorité plafonnée à 20 et des
+buffers finissent par déborder.
+
+Le même réglage, à part :
+
+```sh
+scripts/namfoop-rights status    # ce qui est réglé, et ce que la session en cours a reçu
+scripts/namfoop-rights on        # le régler (une fois par utilisateur)
+scripts/namfoop-rights off       # le retirer
+```
+
+| Système | Ce que fait `on` |
+| :--- | :--- |
+| EndeavourOS, Arch | installe `realtime-privileges`, ajoute l'utilisateur au groupe `realtime` (et `audio`) |
+| DietPi, Debian, Ubuntu | écrit `/etc/security/limits.d/95-namfoop.conf` (priorité 95 et mémoire sans limite pour le groupe `audio`), ajoute l'utilisateur à `audio` ; sur le Pi, aussi à `video` |
+
+**Les droits valent pour les sessions ouvertes ensuite** : se déconnecter puis se reconnecter,
+SSH compris. `status` le dit si la session en cours ne les a pas encore reçus. Le service de
+démarrage du Pi, lui, ne dépend pas de ce réglage : il pose ses propres limites.
+
+**Sur DietPi, par SSH** : le serveur SSH installé par défaut, Dropbear, n'applique pas ces limites,
+même après reconnexion (`status` et le diagnostic le détectent et le disent). Trois façons de les
+recevoir :
+
+- `sudo -iu $USER` ouvre, dans la session SSH, un shell qui les reçoit : le plus simple pour un
+  essai ;
+- la console du Pi (clavier et écran) les reçoit toujours ;
+- passer à OpenSSH, qui les applique : `dietpi-software`, SSH Server, OpenSSH (DietPi remplace
+  Dropbear ; revenir en arrière par le même menu).
+
 ## Les options
 
 | Option | Effet |
