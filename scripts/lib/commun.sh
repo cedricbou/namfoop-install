@@ -86,11 +86,30 @@ default_namfoop_version() {
   tr -d '[:space:]' <"$root/NAMFOOP_VERSION"
 }
 
-# Vrai si l'horloge est synchronisée par le réseau, ou si on ne peut pas le savoir (pas de systemd).
-clock_synced() {
+# Vrai si une unit systemd (ou un script d'init SysV) est lancée au démarrage. Sans D-Bus (DietPi
+# n'en installe pas), « systemctl is-enabled » échoue hors root : on regarde aussi les liens.
+unit_enabled() {
+  systemctl is-enabled --quiet "$1" 2>/dev/null && return 0
+  compgen -G "${NAMFOOP_PI_ROOT:-}/etc/systemd/system/*.wants/$1.service" >/dev/null && return 0
+  compgen -G "${NAMFOOP_PI_ROOT:-}/etc/rc[2-5].d/S*$1" >/dev/null
+}
+
+# État de la synchronisation de l'heure : yes, no ou unknown. timedatectl passe par D-Bus ; sans lui,
+# systemd-timesyncd laisse un témoin dans /run une fois l'heure reçue.
+clock_sync_state() {
   local v
-  v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || return 0
-  [[ -z $v || $v == yes ]]
+  if v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) && [[ -n $v ]]; then
+    [[ $v == yes ]] && echo yes || echo no
+  elif [[ -e /run/systemd/timesync/synchronized ]]; then
+    echo yes
+  else
+    echo unknown
+  fi
+}
+
+# Vrai si l'horloge est synchronisée par le réseau, ou si on ne peut pas le savoir.
+clock_synced() {
+  [[ $(clock_sync_state) != no ]]
 }
 
 # Vrai si l'heure est sûrement en retard : antérieure au dernier commit du dépôt donné (si git le dit).
@@ -117,7 +136,7 @@ ensure_clock() {
     warn "l'heure de la machine n'est pas synchronisée par le réseau : $(date '+%F %T %Z')"
   fi
   info "si elle est en retard, les dépôts de paquets et git refuseront de télécharger (« Not live until … »)"
-  if ! systemctl is-enabled --quiet systemd-timesyncd 2>/dev/null; then
+  if ! unit_enabled systemd-timesyncd; then
     if [[ -d /boot/dietpi ]]; then
       warn "synchronisation de l'heure coupée : dietpi-config, Advanced Options, Time sync mode, « Boot only » (une fois au démarrage, rien pendant le jeu) ; ou à la main : sudo date -s \"AAAA-MM-JJ HH:MM\""
     else

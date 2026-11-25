@@ -30,6 +30,7 @@ Le code de sortie vaut 0 quand rien n'est à corriger : on peut l'enchaîner dan
 | Cœur réservé (`isolcpus`, `nohz_full`, `irqaffinity`) | un cœur pour le son seul ; namfoop s'y épingle avec `--cpu N` |
 | Interruptions USB | leur priorité face au thread audio (FIFO 80), affichée pour la mesure |
 | Pi : alimentation, chauffe, courant USB (par `vcgencmd`, qui demande le groupe `video`) | un Pi bridé ralentit ; sans l'alimentation officielle, l'USB est limité à 600 mA pour la carte son et le pédalier |
+| Pi : swap coupé | rien n'écrit sur la carte SD à l'improviste |
 | Pi : protection en écriture, partie de données | le système protégé, les sons et calibrations inscriptibles |
 | Carte son, accès à `/dev/snd` | namfoop parle directement à la carte |
 | Séquenceur MIDI (`snd-seq`) | sans lui, ni pédalier ni horloge |
