@@ -97,7 +97,7 @@ install_deps() {
   fi
   info "paquets à installer : $missing"
   confirm "Installer ces paquets ?" || die "dépendances manquantes : $missing"
-  ensure_clock
+  ensure_clock "$HERE/.."
   case $TARGET in
     endeavouros | arch)
       # shellcheck disable=SC2086  # liste de paquets volontairement découpée
@@ -130,7 +130,7 @@ install_rustup() {
 # ---------------------------------------------------------------- source et compilation
 
 fetch_source() {
-  ensure_clock
+  ensure_clock "$HERE/.."
   if [[ -d $SRC/.git ]]; then
     info "source de namfoop : $SRC, passage à $VERSION"
     run git -C "$SRC" fetch -q --depth 1 origin "refs/tags/$VERSION:refs/tags/$VERSION"
