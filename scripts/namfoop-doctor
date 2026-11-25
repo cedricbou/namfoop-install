@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 les contributeurs de namfoop-install
 #
-# Dit si la machine est prête à jouer avec namfoop, et comment corriger ce qui manque. Ne modifie rien.
+# Dit si la machine est prête à jouer avec namfoop, et comment corriger ce qui manque. Le diagnostic
+# ne modifie rien ; seule la mesure peut installer ses outils (rt-tests, stress-ng), après avoir demandé.
 #
-#   namfoop-doctor              chaque point : ✓ bon, ✗ à corriger (avec la commande), · sans objet ou pour info
-#   namfoop-doctor --measure    en plus : latence du système pendant 60 s (cyclictest), sans jouer de son
-#   namfoop-doctor --core N     cœur du thread audio pour la mesure (défaut : le dernier cœur isolé, sinon le dernier)
+#   namfoop-doctor                    chaque point : ✓ bon, ✗ à corriger (avec la commande), · pour info
+#   namfoop-doctor --measure          en plus : latence du système pendant 60 s (cyclictest), sans son
+#   namfoop-doctor --measure --load   pareil, les autres cœurs chargés à fond (stress-ng), comme sur scène
+#   options : --duration S, --core N (cœur mesuré : le dernier cœur réservé, sinon le dernier), --yes
 #
 # Code de sortie : 0 si rien n'est à corriger, 1 sinon.
 set -euo pipefail
@@ -15,15 +17,18 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/lib/commun.sh"
 
 usage() {
-  sed -n '6,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '5,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 MEASURE=0
+LOAD=0
 DURATION=60
 CORE=""
 while (($#)); do
   case $1 in
     --measure) MEASURE=1 ;;
+    --load) LOAD=1 ;;
+    -y | --yes) YES=1 ;;
     --duration) DURATION=${2:?--duration demande des secondes}; shift ;;
     --core) CORE=${2:?--core demande un numéro de cœur}; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -71,6 +76,9 @@ check_kernel() {
   section "Noyau"
   if kernel_is_rt; then
     good "noyau temps réel (PREEMPT_RT) : $(uname -r)"
+    if ((IS_PI)) && [[ $(uname -r) == *-v8* ]]; then
+      note "noyau « v8 » (pages de 4 Ko) et non « 2712 » (pages de 16 Ko, propre au Pi 5) : à comparer à la mesure"
+    fi
   elif ((IS_PI)); then
     bad "noyau standard ($(uname -r)) : le Pi de scène doit tourner sur un noyau PREEMPT_RT" \
       "voir guides/pi5-dietpi (noyau temps réel)"
@@ -85,13 +93,18 @@ check_kernel() {
 check_clock() {
   section "Heure"
   local v
-  if ! v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || [[ -z $v ]]; then
-    note "synchronisation de l'heure : inconnue (pas de systemd)"
+  local dietpi_fix="dietpi-config, Advanced Options, Time sync mode, « Boot only » : une fois au démarrage, rien pendant le jeu"
+  if clock_behind "$HERE/.."; then
+    bad "heure en retard : $(date '+%F %T %Z'), avant le dernier commit de ce dépôt — paquets et téléchargements seront refusés" \
+      "$( ((IS_PI)) && echo "$dietpi_fix ; tout de suite : sudo date -s \"AAAA-MM-JJ HH:MM\" (UTC)" || echo "sudo systemctl restart systemd-timesyncd")"
+  elif ! v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || [[ -z $v ]]; then
+    note "heure : $(date '+%F %T %Z') — synchronisation inconnue (timedatectl ne répond pas)" \
+      "$( ((IS_PI)) && echo "$dietpi_fix" || echo "vérifier que l'heure est juste")"
   elif [[ $v == yes ]]; then
     good "heure synchronisée par le réseau : $(date '+%F %T %Z')"
   else
     bad "heure pas synchronisée par le réseau : $(date '+%F %T %Z') — en retard, elle fait refuser paquets et téléchargements" \
-      "sudo systemctl restart systemd-timesyncd, puis « timedatectl » (sur DietPi : dietpi-config, Advanced Options, Time sync mode, « Boot only » : une fois au démarrage, rien pendant le jeu)"
+      "sudo systemctl restart systemd-timesyncd, puis « timedatectl » (sur DietPi : $dietpi_fix)"
   fi
 }
 
@@ -168,11 +181,15 @@ check_cpu() {
 
 check_pi() {
   section "Raspberry Pi"
+  local thr
+  thr=$(vcgencmd get_throttled 2>&1 || true)
   if ! command -v vcgencmd &>/dev/null; then
     note "vcgencmd absent : alimentation et température non vérifiées"
+  elif [[ $thr != throttled=0x* ]]; then
+    bad "vcgencmd n'a pas accès au processeur graphique : alimentation et température non vérifiées (${thr%%$'\n'*})" \
+      "sudo usermod -aG video \$USER, puis se reconnecter"
   else
-    local thr
-    thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || true)
+    thr=${thr#throttled=}
     if [[ $thr == 0x0 ]]; then
       good "alimentation et température : jamais bridé depuis le démarrage"
     else
@@ -261,7 +278,7 @@ check_namfoop() {
     good "bibliothèque trouvée depuis n'importe quel dossier"
   else
     local first=${err%%$'\n'*} fix="scripts/namfoop-library init"
-    [[ $first == *vide* ]] && fix="scripts/namfoop-library import <dossier de zips>"
+    [[ $first == *vide* ]] && fix="namfoop import <zips ou dossier>"
     bad "namfoop ne trouve pas de sons depuis / : ${first#Error: }" "$fix"
   fi
 }
@@ -282,20 +299,68 @@ pick_core() {
   fi
 }
 
-measure() {
-  section "Mesure : latence d'ordonnancement ($DURATION s, aucun son)"
-  if ! command -v cyclictest &>/dev/null; then
-    local pkg="rt-tests"
-    bad "cyclictest absent" "$(is_arch && echo "sudo pacman -S rt-tests" || echo "sudo apt install $pkg")"
-    return
+# Installe, après avoir demandé, les outils de mesure qui manquent. Vrai s'ils sont tous là ensuite.
+measure_tools() {
+  local missing=() cmd pkg
+  for cmd in cyclictest $( ((LOAD)) && echo stress-ng); do
+    command -v "$cmd" &>/dev/null && continue
+    case $cmd in
+      cyclictest) pkg="rt-tests" ;;
+      stress-ng) pkg=stress-ng ;;
+    esac
+    missing+=("$pkg")
+  done
+  ((${#missing[@]})) || return 0
+  info "outils de mesure absents : ${missing[*]}"
+  if ! confirm "Les installer ?"; then
+    bad "outils de mesure absents : ${missing[*]}" \
+      "$(is_arch && echo "sudo pacman -S ${missing[*]}" || echo "sudo apt install ${missing[*]}")"
+    return 1
   fi
-  local core out
+  local sudo=()
+  ((EUID == 0)) || sudo=(sudo)
+  if is_arch; then
+    "${sudo[@]}" pacman -S --needed --noconfirm "${missing[@]}"
+  else
+    "${sudo[@]}" apt-get install -y -q "${missing[@]}"
+  fi
+}
+
+# Les cœurs autres que celui mesuré, en liste pour stress-ng --taskset (ex. « 0,1,2 »).
+other_cores() {
+  local c out=()
+  for ((c = 0; c < $(nproc); c++)); do
+    ((c == $1)) || out+=("$c")
+  done
+  (IFS=,; echo "${out[*]}")
+}
+
+measure() {
+  local title="Mesure : latence d'ordonnancement ($DURATION s, aucun son"
+  ((LOAD)) && title+=", autres cœurs chargés"
+  section "$title)"
+  measure_tools || return 0
+  local core out stress_pid=""
   core=$(pick_core)
+  if ((LOAD)); then
+    local others
+    others=$(other_cores "$core")
+    info "charge : stress-ng sur les cœurs $others"
+    stress-ng --cpu "$(($(nproc) - 1))" --taskset "$others" --timeout "$((DURATION + 5))s" --quiet &
+    stress_pid=$!
+    sleep 2
+  else
+    info "(pour mesurer machine chargée, comme sur scène : --load)"
+  fi
   info "cyclictest sur le cœur $core, priorité 80 comme le thread audio, toutes les 200 µs…"
-  info "(pour mesurer sous charge : lancer « stress -c $(($(nproc) - 1)) » sur les autres cœurs dans un autre terminal)"
   if ! out=$(cyclictest -m -q -p 80 -i 200 -t 1 -a "$core" -D "$DURATION" 2>&1); then
+    [[ -n $stress_pid ]] && kill "$stress_pid" 2>/dev/null
     bad "cyclictest a échoué : ${out%%$'\n'*}" "$(rt_rights_fix)"
     return
+  fi
+  if [[ -n $stress_pid ]]; then
+    kill "$stress_pid" 2>/dev/null || true
+    wait "$stress_pid" 2>/dev/null || true
   fi
   local min avg max
   read -r min avg max < <(awk '/Max:/ {for (i = 1; i <= NF; i++) { if ($i == "Min:") mn = $(i+1); if ($i == "Avg:") av = $(i+1); if ($i == "Max:") mx = $(i+1) } print mn, av, mx}' <<<"$out")
@@ -308,7 +373,7 @@ measure() {
     bad "latence d'ordonnancement : max $max µs (moyenne $avg µs) — trop pour un buffer de 1 ms" \
       "noyau PREEMPT_RT, cœur réservé, gouverneur performance"
   fi
-  MEASURE_LINE="cyclictest cœur $core, ${DURATION} s : min $min / moy $avg / max $max µs"
+  MEASURE_LINE="cyclictest cœur $core, ${DURATION} s$( ((LOAD)) && echo ", autres cœurs chargés (stress-ng)") : min $min / moy $avg / max $max µs"
 }
 
 # ---------------------------------------------------------------- rapport
