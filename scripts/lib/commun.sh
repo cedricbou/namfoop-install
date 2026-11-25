@@ -93,13 +93,29 @@ clock_synced() {
   [[ -z $v || $v == yes ]]
 }
 
+# Vrai si l'heure est sûrement en retard : antérieure au dernier commit du dépôt donné (si git le dit).
+clock_behind() {
+  local root=$1 ref
+  ref=$(git -C "$root" log -1 --format=%ct 2>/dev/null) || return 1
+  [[ -n $ref ]] && (($(date +%s) < ref))
+}
+
 # Une horloge en retard fait refuser les signatures des dépôts (« Not live until … ») et les
 # certificats HTTPS (git clone). Le Pi n'a pas de pile : au démarrage, son heure est celle du dernier
 # arrêt jusqu'à ce que le réseau la corrige. Si systemd-timesyncd tient l'heure, on relance la
 # synchronisation et on attend 30 s au plus ; sinon on prévient seulement.
+#   ensure_clock [racine du dépôt]   avec la racine, une heure antérieure à son dernier commit est
+#                                    reconnue en retard même quand timedatectl ne répond pas.
 ensure_clock() {
-  clock_synced && return 0
-  warn "l'heure de la machine n'est pas synchronisée par le réseau : $(date '+%F %T %Z')"
+  local root=${1:-} behind=0
+  [[ -n $root ]] && clock_behind "$root" && behind=1
+  if ((behind)); then
+    warn "l'heure de la machine ($(date '+%F %T %Z')) est antérieure au dernier commit de ce dépôt : elle est en retard"
+  elif clock_synced; then
+    return 0
+  else
+    warn "l'heure de la machine n'est pas synchronisée par le réseau : $(date '+%F %T %Z')"
+  fi
   info "si elle est en retard, les dépôts de paquets et git refuseront de télécharger (« Not live until … »)"
   if ! systemctl is-enabled --quiet systemd-timesyncd 2>/dev/null; then
     if [[ -d /boot/dietpi ]]; then

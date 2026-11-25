@@ -2,42 +2,39 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 les contributeurs de namfoop-install
 #
-# Range la bibliothèque de sons de namfoop au bon endroit, l'écrit dans sa config, y importe des packs.
+# Range la bibliothèque de sons de namfoop au bon endroit et l'écrit dans sa config.
 #
 #   namfoop-library init [--path DIR] [--config FILE] [--yes] [--dry-run]
-#   namfoop-library import [--config FILE] [--dry-run] SOURCE... [-- options de « namfoop import »]
 #   namfoop-library status [--config FILE]
 #
-# Une bibliothèque existante n'est jamais déplacée, vidée ni écrasée. Le script ne lit pas les sons :
-# l'import passe par « namfoop import », qui vérifie et range chaque fichier.
+# Une bibliothèque existante n'est jamais déplacée, vidée ni écrasée. Le script ne lit pas les sons ;
+# pour en ajouter, c'est namfoop lui-même : « namfoop import <zips ou dossier> ».
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/commun.sh
 . "$HERE/lib/commun.sh"
 
 usage() {
-  sed -n '6,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '6,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 TARGET=$(detect_target)
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/namfoop/config.toml"
 LIB=""
 CMD=""
-SOURCES=()
-PASSTHROUGH=()
 
 parse_common_args "$@"
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 while (($#)); do
   case $1 in
-    init | import | status) [[ -z $CMD ]] && CMD=$1 || SOURCES+=("$1") ;;
+    init | status)
+      [[ -z $CMD ]] || die "une seule commande à la fois : $1"
+      CMD=$1 ;;
     --path) LIB=${2:?--path demande un dossier}; shift ;;
     --config) CONFIG=${2:?--config demande un fichier}; shift ;;
     -y | --yes) YES=1 ;;
     -h | --help) usage; exit 0 ;;
-    --) shift; PASSTHROUGH=("$@"); break ;;
-    -*) usage >&2; die "argument inconnu : $1" ;;
-    *) SOURCES+=("$1") ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
   esac
   shift
 done
@@ -139,20 +136,7 @@ cmd_init() {
     write_config_library "$wanted"
     ((DRY_RUN)) || ok "écrite dans la config : $CONFIG"
   fi
-  info "pour y mettre tes sons : namfoop-library import <dossier de zips>"
-}
-
-cmd_import() {
-  ((${#SOURCES[@]})) || die "import : donne au moins un zip, un dossier ou un fichier .nam / .wav"
-  [[ -n $NAMFOOP ]] || die "namfoop introuvable dans le PATH : scripts/namfoop-build d'abord"
-  local lib
-  lib=$(resolve_library)
-  [[ -d $lib ]] || die "bibliothèque absente ($lib) : namfoop-library init d'abord"
-  local args=(--config "$CONFIG" import --library "$lib")
-  ((DRY_RUN)) && args+=(--dry-run)
-  info "import dans $lib"
-  # namfoop import a son propre --dry-run : il vérifie tout sans rien écrire.
-  "$NAMFOOP" "${args[@]}" "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}" "${SOURCES[@]}"
+  info "pour y mettre tes sons : namfoop import <zips ou dossier>"
 }
 
 cmd_status() {
@@ -174,20 +158,25 @@ cmd_status() {
   else
     warn "bibliothèque absente : $lib (namfoop-library init)"
   fi
-  if [[ -n $NAMFOOP ]]; then
+  if [[ -z $NAMFOOP ]]; then
+    warn "namfoop introuvable dans le PATH (scripts/namfoop-build)"
+  elif [[ -d $lib ]]; then
     # Depuis un dossier neutre, pour vérifier que namfoop la trouve d'où qu'il soit lancé.
-    if (cd / && "$NAMFOOP" --config "$CONFIG" models >/dev/null 2>&1); then
+    local err
+    if err=$(cd / && "$NAMFOOP" --config "$CONFIG" models 2>&1 >/dev/null); then
       ok "namfoop la trouve depuis n'importe quel dossier"
     else
-      warn "namfoop ne la trouve pas depuis / : $(cd / && "$NAMFOOP" --config "$CONFIG" models 2>&1 | head -1)"
+      err=$(printf '%s' "$err" | sed 's/^Error: //; s/^ *//' | paste -sd ' ')
+      if [[ $err == *vide* ]]; then
+        info "bibliothèque vide : pour y mettre tes sons, namfoop import <zips ou dossier>"
+      else
+        warn "namfoop ne la trouve pas depuis / : $err"
+      fi
     fi
-  else
-    warn "namfoop introuvable dans le PATH"
   fi
 }
 
 case $CMD in
   init) cmd_init ;;
-  import) cmd_import ;;
   status) cmd_status ;;
 esac

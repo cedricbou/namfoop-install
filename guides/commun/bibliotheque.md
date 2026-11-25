@@ -8,8 +8,8 @@ une fois pour toutes dans la config de namfoop : c'est ce que fait ce script.
 ## En deux commandes
 
 ```sh
-scripts/namfoop-library init                      # crée la bibliothèque et l'écrit dans la config
-scripts/namfoop-library import ~/Téléchargements/ # y range chaque zip de ce dossier
+scripts/namfoop-library init           # crée la bibliothèque et l'écrit dans la config
+namfoop import ~/Téléchargements/      # namfoop y range lui-même chaque zip de ce dossier
 ```
 
 Puis, pour vérifier, sans rien changer :
@@ -45,19 +45,13 @@ Pour la mettre ailleurs : `scripts/namfoop-library init --path /chemin/de/ma/bib
 
 Relancer `init` ne change rien.
 
-## Ce que fait `import`
+## Y mettre ses sons
 
-Il confie le travail à `namfoop import` : chaque zip, dossier, `.nam` ou `.wav` est rangé dans
-son pack, vérifié (un modèle illisible ou une IR muette est refusé), et rien de ce qui est déjà
-dans la bibliothèque n'est écrasé. Relancer l'import ne change rien.
-
-```sh
-scripts/namfoop-library import --dry-run ~/Téléchargements/    # vérifie tout sans rien écrire
-scripts/namfoop-library import pack.zip -- --pack "Mes IR"     # après --, les options de namfoop import
-```
-
-Le détail (types de capture, fichiers identiques, IR conseillées) est dans le guide de namfoop,
-§ 6 « La bibliothèque de sons ».
+C'est namfoop qui s'en charge : `namfoop import` range chaque zip, dossier, `.nam` ou `.wav` dans
+son pack, le vérifie (un modèle illisible ou une IR muette est refusé), et n'écrase jamais ce qui
+est déjà dans la bibliothèque. Une fois la config écrite par `init`, il sait où ranger, d'où qu'on
+le lance. Le détail (types de capture, fichiers identiques, IR conseillées) est dans le guide de
+namfoop, § 6 « La bibliothèque de sons ».
 
 ## Revenir en arrière
 
