@@ -91,7 +91,7 @@ check_clock() {
     good "heure synchronisée par le réseau : $(date '+%F %T %Z')"
   else
     bad "heure pas synchronisée par le réseau : $(date '+%F %T %Z') — en retard, elle fait refuser paquets et téléchargements" \
-      "sudo systemctl restart systemd-timesyncd, puis « timedatectl » (sur DietPi : dietpi-config, Advanced Options, Time sync mode)"
+      "sudo systemctl restart systemd-timesyncd, puis « timedatectl » (sur DietPi : dietpi-config, Advanced Options, Time sync mode, « Boot only » : une fois au démarrage, rien pendant le jeu)"
   fi
 }
 
