@@ -85,3 +85,42 @@ default_namfoop_version() {
   local root=$1
   tr -d '[:space:]' <"$root/NAMFOOP_VERSION"
 }
+
+# Vrai si l'horloge est synchronisée par le réseau, ou si on ne peut pas le savoir (pas de systemd).
+clock_synced() {
+  local v
+  v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || return 0
+  [[ -z $v || $v == yes ]]
+}
+
+# Une horloge en retard fait refuser les signatures des dépôts (« Not live until … ») et les
+# certificats HTTPS (git clone). Le Pi n'a pas de pile : au démarrage, son heure est celle du dernier
+# arrêt jusqu'à ce que le réseau la corrige. Si systemd-timesyncd tient l'heure, on relance la
+# synchronisation et on attend 30 s au plus ; sinon on prévient seulement.
+ensure_clock() {
+  clock_synced && return 0
+  warn "l'heure de la machine n'est pas synchronisée par le réseau : $(date '+%F %T %Z')"
+  info "si elle est en retard, les dépôts de paquets et git refuseront de télécharger (« Not live until … »)"
+  if ! systemctl is-enabled --quiet systemd-timesyncd 2>/dev/null; then
+    warn "vérifie l'heure avec « date » ; « timedatectl » dit comment elle est tenue"
+    return 0
+  fi
+  if ! confirm "Relancer la synchronisation de l'heure (systemd-timesyncd) ?"; then
+    warn "on continue avec l'heure actuelle"
+    return 0
+  fi
+  if ((DRY_RUN)); then
+    info "[dry-run] sudo systemctl restart systemd-timesyncd, puis attente de la synchronisation"
+    return 0
+  fi
+  if ((EUID == 0)); then systemctl restart systemd-timesyncd; else sudo systemctl restart systemd-timesyncd; fi
+  local i
+  for ((i = 0; i < 30; i++)); do
+    if clock_synced; then
+      ok "heure synchronisée : $(date '+%F %T %Z')"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "heure toujours pas synchronisée après 30 s : vérifie le réseau (sur DietPi : dietpi-config, Advanced Options, Time sync mode)"
+}

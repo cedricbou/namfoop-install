@@ -4,6 +4,25 @@ namfoop n'est pas encore distribué tout compilé : on le compile sur la machine
 aussi ce qui donne le binaire le plus rapide, car le moteur des modèles est optimisé pour le
 processeur exact de la machine (sur le Pi 5, son Cortex-A76).
 
+## Récupérer ce dépôt
+
+Avec git (le plus simple pour le mettre à jour ensuite par `git pull`) :
+
+```sh
+git clone https://github.com/cedricbou/namfoop-install.git
+cd namfoop-install
+```
+
+Sur une machine neuve sans git, **DietPi par exemple**, qui n'a ni git ni zip : soit installer git
+d'abord (`sudo apt install -y git`, le script l'installerait de toute façon), soit prendre l'archive
+`.tar.gz`, que `curl` et `tar` savent ouvrir et qui garde les scripts exécutables (l'archive `.zip`
+de GitHub les perd) :
+
+```sh
+curl -L https://github.com/cedricbou/namfoop-install/archive/refs/heads/main.tar.gz | tar xz
+cd namfoop-install-main
+```
+
 ## En une commande
 
 Depuis ce dépôt :
@@ -51,6 +70,16 @@ scripts/namfoop-build status
 Pourquoi ces paquets : namfoop compile avec lui un moteur en C++ (d'où le compilateur C++ et
 `pkg-config`), parle directement à la carte son par ALSA (d'où ses en-têtes), et se compile avec
 Rust.
+
+## Sur le Pi 5 : l'heure
+
+Le Pi n'a pas de pile pour garder l'heure : au démarrage, il reprend celle de son dernier arrêt,
+jusqu'à ce que le réseau la corrige. Tant qu'elle est en retard, les dépôts de paquets refusent
+leurs signatures (« Not live until … ») et les téléchargements HTTPS échouent. Le script vérifie
+donc l'heure avant de télécharger, et propose de relancer sa synchronisation
+(`systemd-timesyncd`). Pour vérifier à la main : `timedatectl` doit dire
+`System clock synchronized: yes`. Sur DietPi, le réglage est dans `dietpi-config`, Advanced
+Options, Time sync mode.
 
 ## Sur le Pi 5 : la mémoire
 
