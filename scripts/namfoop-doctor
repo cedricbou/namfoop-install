@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
+#
+# Dit si la machine est prête à jouer avec namfoop, et comment corriger ce qui manque. Ne modifie rien.
+#
+#   namfoop-doctor              chaque point : ✓ bon, ✗ à corriger (avec la commande), · sans objet ou pour info
+#   namfoop-doctor --measure    en plus : latence du système pendant 60 s (cyclictest), sans jouer de son
+#   namfoop-doctor --core N     cœur du thread audio pour la mesure (défaut : le dernier cœur isolé, sinon le dernier)
+#
+# Code de sortie : 0 si rien n'est à corriger, 1 sinon.
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/commun.sh
+. "$HERE/lib/commun.sh"
+
+usage() {
+  sed -n '6,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+MEASURE=0
+DURATION=60
+CORE=""
+while (($#)); do
+  case $1 in
+    --measure) MEASURE=1 ;;
+    --duration) DURATION=${2:?--duration demande des secondes}; shift ;;
+    --core) CORE=${2:?--core demande un numéro de cœur}; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
+  esac
+  shift
+done
+
+TARGET=$(detect_target)
+IS_PI=0
+[[ $TARGET == pi5-dietpi ]] && IS_PI=1
+TO_FIX=0
+REPORT=()
+
+good() {
+  printf '  ✓ %s\n' "$1"
+  REPORT+=("ok   $1")
+}
+bad() {
+  printf '  ✗ %s\n' "$1"
+  [[ -n ${2:-} ]] && printf '      → %s\n' "$2"
+  REPORT+=("KO   $1")
+  TO_FIX=$((TO_FIX + 1))
+}
+note() {
+  printf '  · %s\n' "$1"
+  [[ -n ${2:-} ]] && printf '      → %s\n' "$2"
+  REPORT+=("info $1")
+}
+section() { printf '\n%s\n' "$1"; }
+
+is_arch() { [[ $TARGET == endeavouros || $TARGET == arch ]]; }
+
+rt_rights_fix() {
+  if is_arch; then
+    echo "sudo pacman -S --needed realtime-privileges && sudo usermod -aG realtime \$USER, puis se reconnecter"
+  else
+    echo "une ligne « @audio - rtprio 95 » et « @audio - memlock unlimited » dans /etc/security/limits.d/namfoop.conf, sudo usermod -aG audio \$USER, puis se reconnecter (le service de scène, lui, a LimitRTPRIO et LimitMEMLOCK)"
+  fi
+}
+
+# ---------------------------------------------------------------- noyau
+
+check_kernel() {
+  section "Noyau"
+  if kernel_is_rt; then
+    good "noyau temps réel (PREEMPT_RT) : $(uname -r)"
+  elif ((IS_PI)); then
+    bad "noyau standard ($(uname -r)) : le Pi de scène doit tourner sur un noyau PREEMPT_RT" \
+      "voir guides/pi5-dietpi (noyau temps réel)"
+  else
+    note "noyau standard ($(uname -r)) : PREEMPT_RT est facultatif sur ce poste" \
+      "voir guides/endeavouros (noyau temps réel en option)"
+  fi
+}
+
+# ---------------------------------------------------------------- droits
+
+check_rights() {
+  section "Droits temps réel (pour l'utilisateur $(id -un))"
+  local rt mem
+  rt=$(ulimit -r)
+  mem=$(ulimit -l)
+  if [[ $rt == unlimited ]] || ((rt >= 80)); then
+    good "priorité temps réel autorisée jusqu'à $rt (namfoop demande 80)"
+  else
+    bad "priorité temps réel plafonnée à $rt : namfoop retombe sur rtkit (20), et des buffers débordent" "$(rt_rights_fix)"
+  fi
+  if [[ $mem == unlimited ]]; then
+    good "mémoire verrouillable sans limite (namfoop verrouille la sienne : pas de défaut de page en jouant)"
+  else
+    bad "mémoire verrouillable limitée à $mem Ko : namfoop ne pourra pas verrouiller sa mémoire" "$(rt_rights_fix)"
+  fi
+}
+
+# ---------------------------------------------------------------- processeur
+
+governors() {
+  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2, $1; sep=", "}' || true
+}
+
+check_cpu() {
+  section "Processeur"
+  local gov
+  gov=$(governors)
+  if [[ -z $gov ]]; then
+    note "gouverneur : non exposé par cette machine (conteneur ou machine virtuelle)"
+  elif [[ $gov == performance×* ]]; then
+    good "gouverneur : $gov"
+  else
+    local fix="sudo cpupower frequency-set -g performance (jusqu'au prochain redémarrage)"
+    ((IS_PI)) && fix="voir guides/pi5-dietpi (réglages audio du Pi)"
+    is_arch && fix="$fix ; en mode scène, scripts/namfoop-scene le fait"
+    bad "gouverneur : $gov — la fréquence redescend entre deux buffers et la charge fait des pics" "$fix"
+  fi
+
+  local isolated cmdline
+  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || true)
+  cmdline=$(cat /proc/cmdline 2>/dev/null || true)
+  if [[ -n $isolated ]]; then
+    good "cœur(s) réservé(s) : $isolated — lancer namfoop avec --cpu ${isolated##*[,-]}"
+    local p
+    for p in nohz_full rcu_nocbs irqaffinity; do
+      if [[ $cmdline == *"$p="* ]]; then
+        local v=${cmdline##*"$p="}
+        good "$p=${v%% *}"
+      else
+        note "$p absent de la ligne de démarrage"
+      fi
+    done
+  elif ((IS_PI)); then
+    bad "aucun cœur réservé au son" "voir guides/pi5-dietpi (isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2)"
+  else
+    note "aucun cœur réservé au son (facultatif sur ce poste)"
+  fi
+
+  local irqs
+  irqs=$(ps -eLo rtprio=,comm= 2>/dev/null | awk '$2 ~ /^irq\/.*(xhci|usb)/ {printf "%s%s (FIFO %s)", sep, $2, $1; sep=", "}' || true)
+  if [[ -n $irqs ]]; then
+    note "interruptions USB : $irqs — le thread audio de namfoop est en FIFO 80"
+  else
+    note "interruptions USB : pas de thread dédié (noyau sans PREEMPT_RT ni threadirqs)"
+  fi
+}
+
+# ---------------------------------------------------------------- Raspberry Pi
+
+check_pi() {
+  section "Raspberry Pi"
+  if ! command -v vcgencmd &>/dev/null; then
+    note "vcgencmd absent : alimentation et température non vérifiées"
+  else
+    local thr
+    thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2 || true)
+    if [[ $thr == 0x0 ]]; then
+      good "alimentation et température : jamais bridé depuis le démarrage"
+    else
+      bad "le Pi a été bridé (get_throttled=$thr) : tension trop basse ou surchauffe, la charge fait des pics" \
+        "alimentation officielle 5 V / 5 A et ventilateur actif ; bits 0/16 : tension, bits 2-3/18-19 : chauffe"
+    fi
+    note "température : $(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || true)"
+    local usb
+    usb=$(vcgencmd get_config usb_max_current_enable 2>/dev/null | cut -d= -f2 || true)
+    if [[ $usb == 1 ]]; then
+      good "courant USB : jusqu'à 1,6 A (usb_max_current_enable=1)"
+    else
+      note "courant USB : limité à 600 mA si le Pi ne reconnaît pas l'alimentation officielle" \
+        "carte son et pédalier alimentés par l'USB : alimentation officielle 5 V / 5 A, ou usb_max_current_enable=1 avec elle seulement"
+    fi
+  fi
+  if [[ $(findmnt -n -o FSTYPE / 2>/dev/null) == overlay ]]; then
+    good "système protégé en écriture (overlay)"
+  else
+    note "système pas encore protégé en écriture" "voir guides/pi5-dietpi (protection en écriture)"
+  fi
+  local data=/mnt/dietpi_userdata
+  if [[ -d $data && -w $data ]]; then
+    good "partie de données inscriptible : $data"
+  else
+    bad "partie de données absente ou en lecture seule : $data" "voir guides/pi5-dietpi (sons et calibrations)"
+  fi
+}
+
+# ---------------------------------------------------------------- audio et MIDI
+
+check_audio() {
+  section "Carte son et MIDI"
+  local cards
+  cards=$(awk -F' - ' '/^ *[0-9]+ \[/ {sub(/^ *[0-9]+ \[[^]]*\]: */, "", $1); printf "%s%s", sep, $2; sep=", "}' /proc/asound/cards 2>/dev/null || true)
+  if [[ -n $cards ]]; then
+    good "carte(s) vue(s) par ALSA : $cards"
+  else
+    bad "aucune carte son vue par ALSA" "brancher la carte (USB) ; « aplay -l » doit la lister"
+  fi
+  if [[ -e /dev/snd ]] && [[ ! -r /dev/snd/timer && -e /dev/snd/timer ]]; then
+    bad "pas d'accès aux périphériques audio (/dev/snd)" "sudo usermod -aG audio \$USER, puis se reconnecter"
+  fi
+  if pgrep -x pipewire &>/dev/null; then
+    note "PipeWire tourne : namfoop lui reprend la carte le temps de jouer et la lui rend"
+  fi
+  if [[ -e /dev/snd/seq ]]; then
+    if [[ -r /dev/snd/seq && -w /dev/snd/seq ]]; then
+      good "séquenceur MIDI disponible"
+    else
+      bad "séquenceur MIDI présent mais inaccessible" "sudo usermod -aG audio \$USER, puis se reconnecter"
+    fi
+    local midi
+    midi=$(awk '/^Client +[0-9]+ :/ && !/"System"|"Midi Through"/ {sub(/^Client +[0-9]+ : "/, ""); sub(/" .*/, ""); printf "%s%s", sep, $0; sep=", "}' /proc/asound/seq/clients 2>/dev/null || true)
+    if [[ -n $midi ]]; then
+      note "appareils MIDI : $midi"
+    else
+      note "aucun appareil MIDI branché (namfoop démarre quand même)"
+    fi
+  else
+    bad "séquenceur MIDI absent (module snd-seq)" \
+      "sudo modprobe snd-seq, et « snd-seq » dans /etc/modules-load.d/namfoop.conf pour les démarrages suivants"
+  fi
+}
+
+# ---------------------------------------------------------------- namfoop
+
+check_namfoop() {
+  section "namfoop"
+  local bin wanted
+  bin=$(command -v namfoop || true)
+  wanted=$(default_namfoop_version "$HERE/..")
+  if [[ -z $bin ]]; then
+    bad "namfoop introuvable dans le PATH" "scripts/namfoop-build"
+    return
+  fi
+  local v
+  v="v$("$bin" --version 2>/dev/null | awk '{print $2}')"
+  if [[ $v == "$wanted" ]]; then
+    good "namfoop $v : $bin"
+  else
+    note "namfoop $v : $bin — les guides suivent $wanted" "scripts/namfoop-build pour passer à $wanted"
+  fi
+  local err
+  if err=$(cd / && "$bin" models 2>&1 >/dev/null); then
+    good "bibliothèque trouvée depuis n'importe quel dossier"
+  else
+    local first=${err%%$'\n'*} fix="scripts/namfoop-library init"
+    [[ $first == *vide* ]] && fix="scripts/namfoop-library import <dossier de zips>"
+    bad "namfoop ne trouve pas de sons depuis / : ${first#Error: }" "$fix"
+  fi
+}
+
+# ---------------------------------------------------------------- mesure
+
+pick_core() {
+  if [[ -n $CORE ]]; then
+    echo "$CORE"
+    return
+  fi
+  local isolated
+  isolated=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || true)
+  if [[ -n $isolated ]]; then
+    echo "${isolated##*[,-]}"
+  else
+    echo $(($(nproc) - 1))
+  fi
+}
+
+measure() {
+  section "Mesure : latence d'ordonnancement ($DURATION s, aucun son)"
+  if ! command -v cyclictest &>/dev/null; then
+    local pkg="rt-tests"
+    bad "cyclictest absent" "$(is_arch && echo "sudo pacman -S rt-tests" || echo "sudo apt install $pkg")"
+    return
+  fi
+  local core out
+  core=$(pick_core)
+  info "cyclictest sur le cœur $core, priorité 80 comme le thread audio, toutes les 200 µs…"
+  info "(pour mesurer sous charge : lancer « stress -c $(($(nproc) - 1)) » sur les autres cœurs dans un autre terminal)"
+  if ! out=$(cyclictest -m -q -p 80 -i 200 -t 1 -a "$core" -D "$DURATION" 2>&1); then
+    bad "cyclictest a échoué : ${out%%$'\n'*}" "$(rt_rights_fix)"
+    return
+  fi
+  local min avg max
+  read -r min avg max < <(awk '/Max:/ {for (i = 1; i <= NF; i++) { if ($i == "Min:") mn = $(i+1); if ($i == "Avg:") av = $(i+1); if ($i == "Max:") mx = $(i+1) } print mn, av, mx}' <<<"$out")
+  # Budget d'un buffer de 48 frames à 48 kHz : 1000 µs. Un réveil en retard en grignote une part.
+  if ((max <= 100)); then
+    good "latence d'ordonnancement : min $min µs, moyenne $avg µs, max $max µs"
+  elif ((max <= 300)); then
+    note "latence d'ordonnancement : min $min µs, moyenne $avg µs, max $max µs — jouable, marge réduite"
+  else
+    bad "latence d'ordonnancement : max $max µs (moyenne $avg µs) — trop pour un buffer de 1 ms" \
+      "noyau PREEMPT_RT, cœur réservé, gouverneur performance"
+  fi
+  MEASURE_LINE="cyclictest cœur $core, ${DURATION} s : min $min / moy $avg / max $max µs"
+}
+
+# ---------------------------------------------------------------- rapport
+
+MEASURE_LINE=""
+echo "namfoop-doctor — $TARGET, $(uname -m), $(nproc) cœurs"
+check_kernel
+check_rights
+check_cpu
+((IS_PI)) && check_pi
+check_audio
+check_namfoop
+((MEASURE)) && measure
+
+section "Résumé"
+if ((TO_FIX == 0)); then
+  ok "rien à corriger"
+else
+  warn "$TO_FIX point(s) à corriger"
+fi
+
+if ((MEASURE)); then
+  section "À coller dans une issue"
+  echo '```'
+  echo "machine : $(tr -d '\0' 2>/dev/null </proc/device-tree/model || uname -m) · $TARGET · noyau $(uname -r) · $(date +%F)"
+  echo "namfoop : $(command -v namfoop >/dev/null && namfoop --version 2>/dev/null || echo absent)"
+  [[ -n $MEASURE_LINE ]] && echo "$MEASURE_LINE"
+  printf '%s\n' "${REPORT[@]}"
+  echo '```'
+fi
+
+((TO_FIX == 0))
