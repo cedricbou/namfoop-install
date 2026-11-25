@@ -43,4 +43,21 @@ Dans `scripts/`. Tous suivent les mêmes règles :
 
 ## Licence
 
-GPL-3.0-or-later ([`LICENSE`](LICENSE)), comme namfoop.
+Copyright (C) 2026 les contributeurs de namfoop-install.
+
+Ce dépôt est un logiciel libre sous **GPL-3.0-or-later** ([`LICENSE`](LICENSE)), comme namfoop : on
+peut utiliser, étudier, modifier et redistribuer ses guides et ses scripts, à condition qu'une
+version redistribuée, modifiée ou non, reste sous la même licence avec sa source. Chaque script le
+rappelle en tête (`SPDX-License-Identifier: GPL-3.0-or-later`).
+
+Ce que les scripts installent ou téléchargent n'est pas redistribué par ce dépôt et garde sa propre
+licence : namfoop (GPL-3.0-or-later), DietPi (GPL-2.0), le noyau Linux (GPL-2.0), cage (MIT), foot
+(MIT), dtach (GPL-2.0-or-later), la police JetBrains Mono (SIL OFL 1.1). Les modèles et IR ne sont
+jamais distribués : chaque pack garde la licence de son auteur.
+
+Un fichier repris d'un autre projet garde sa licence d'origine, indiquée en tête du fichier, et est
+listé ici :
+
+| Fichier | Origine | Licence |
+| :--- | :--- | :--- |
+| *(aucun pour l'instant)* | | |

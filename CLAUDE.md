@@ -48,6 +48,23 @@ détail technique (paquets, fichiers, pistes, mesures) va dans un commentaire `#
 Étiquettes de type : `epic`, `story`, `etude` (à trancher avant de coder), `chore`, `bug` ; de cible :
 `pi5`, `endeavouros`, `commun`.
 
+## Licence (GPL-3.0-or-later) : s'y conformer
+
+- Tout fichier écrit ici est sous GPL-3.0-or-later. Chaque script commence par
+  `# SPDX-License-Identifier: GPL-3.0-or-later` et `# Copyright (C) <année> les contributeurs de
+  namfoop-install` ; `shellcheck` ne le vérifie pas, la CI si (`check.yml`).
+- **Reprendre un fichier d'un autre projet** (unit systemd, script d'overlay, modèle de
+  `dietpi.txt`…) : seulement si sa licence est compatible avec la GPL-3.0 (MIT, BSD, Apache-2.0,
+  GPL-2.0-or-later, GPL-3.0). Garder son en-tête et sa licence, l'ajouter au tableau « Licence » du
+  README. **GPL-2.0-only est incompatible** (DietPi, le noyau) : on ne copie pas leurs fichiers ; on
+  écrit nos propres réglages et un script les applique au fichier en place.
+- **Distribuer un binaire** (namfoop précompilé, noyau temps réel empaqueté) engage plus qu'un
+  script : joindre la licence et un lien vers la **source exacte** (tag de namfoop ; pour un noyau,
+  la source, la `.config` et les correctifs, publiés au même endroit et aussi longtemps que le
+  binaire), avec les textes de licence de ce qui y est embarqué (voir la table « Licences » du
+  README de namfoop pour le binaire namfoop).
+- Rien de ce dépôt ne versionne un son, un modèle, une IR, ni une police.
+
 ## Conventions
 
 - Tout en **français** : guides, messages des scripts, commentaires ; identifiants en anglais.

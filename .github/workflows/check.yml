@@ -25,3 +25,18 @@ jobs:
             echo "Des sons ou des archives sont versionnés : les retirer." >&2
             exit 1
           fi
+
+  licence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: en-tête de licence de chaque script
+        run: |
+          missing=0
+          while IFS= read -r f; do
+            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier:'; then
+              echo "sans en-tête SPDX : $f" >&2
+              missing=1
+            fi
+          done < <(git ls-files 'scripts/**' 'config/**')
+          exit "$missing"

@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
 # Fonctions partagées par les scripts : journal, détection du système, mode --dry-run.
 # À sourcer : . "$(dirname "$0")/lib/commun.sh"
 
