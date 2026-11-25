@@ -80,6 +80,21 @@ check_kernel() {
   fi
 }
 
+# ---------------------------------------------------------------- heure
+
+check_clock() {
+  section "Heure"
+  local v
+  if ! v=$(timedatectl show -p NTPSynchronized --value 2>/dev/null) || [[ -z $v ]]; then
+    note "synchronisation de l'heure : inconnue (pas de systemd)"
+  elif [[ $v == yes ]]; then
+    good "heure synchronisée par le réseau : $(date '+%F %T %Z')"
+  else
+    bad "heure pas synchronisée par le réseau : $(date '+%F %T %Z') — en retard, elle fait refuser paquets et téléchargements" \
+      "sudo systemctl restart systemd-timesyncd, puis « timedatectl » (sur DietPi : dietpi-config, Advanced Options, Time sync mode)"
+  fi
+}
+
 # ---------------------------------------------------------------- droits
 
 check_rights() {
@@ -301,6 +316,7 @@ measure() {
 MEASURE_LINE=""
 echo "namfoop-doctor — $TARGET, $(uname -m), $(nproc) cœurs"
 check_kernel
+check_clock
 check_rights
 check_cpu
 ((IS_PI)) && check_pi

@@ -22,6 +22,7 @@ Le code de sortie vaut 0 quand rien n'est à corriger : on peut l'enchaîner dan
 | Point | Pourquoi ça compte |
 | :--- | :--- |
 | Noyau PREEMPT_RT | réveille le thread audio à l'heure même quand la machine travaille ; obligatoire sur le Pi de scène, facultatif sur le PC |
+| Heure synchronisée | en retard (Pi sans pile, juste démarré), elle fait refuser les paquets et les téléchargements |
 | Priorité temps réel ≥ 80 | namfoop met son thread audio en FIFO 80 ; sans ce droit il retombe sur rtkit, plafonné à 20, et des buffers débordent |
 | Mémoire verrouillable sans limite | namfoop verrouille sa mémoire : aucun défaut de page en jouant |
 | Gouverneur `performance` | sinon la fréquence redescend entre deux buffers et la charge fait des pics |
