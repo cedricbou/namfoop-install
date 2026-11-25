@@ -1,0 +1,8 @@
+# Jamais de sons ni de bibliothèque dans ce dépôt
+library/
+nam/
+*.nam
+*.wav
+*.zip
+# Builds locaux de namfoop
+build/

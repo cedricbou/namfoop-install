@@ -1,0 +1,27 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          mapfile -t files < <(git ls-files 'scripts/**' | xargs -r grep -lE '^#!.*(ba)?sh|shell=bash' || true)
+          if ((${#files[@]})); then shellcheck -x "${files[@]}"; else echo "aucun script"; fi
+
+  aucun-son:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: aucun son versionné
+        run: |
+          if git ls-files | grep -iE '\.(nam|wav|flac|aif|aiff|mp3|zip)$'; then
+            echo "Des sons ou des archives sont versionnés : les retirer." >&2
+            exit 1
+          fi
