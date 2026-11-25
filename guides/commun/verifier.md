@@ -11,7 +11,8 @@ scripts/namfoop-doctor
 Chaque ligne dit :
 
 - `✓` : bon ;
-- `✗` : à corriger, avec, en dessous, la commande ou le guide qui corrige ;
+- `✗` : à corriger, avec, en dessous, la commande ou le guide qui corrige (les droits temps réel,
+  par exemple : `scripts/namfoop-rights on`) ;
 - `·` : pour information, ou sans objet sur cette machine (un cœur réservé est facultatif sur un
   PC, obligatoire sur le Pi de scène).
 

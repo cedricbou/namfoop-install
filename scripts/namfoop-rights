@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 les contributeurs de namfoop-install
+#
+# Donne à un utilisateur les droits dont namfoop a besoin pour jouer sans craquement : priorité temps
+# réel (namfoop met son thread audio en FIFO 80), mémoire verrouillable sans limite, accès à la carte
+# son et au MIDI ; sur le Pi, accès à vcgencmd (alimentation, température).
+#
+#   namfoop-rights status [--user U]          ce qui est réglé, et ce que la session en cours a reçu
+#   namfoop-rights on [--user U] [--yes] [--dry-run]
+#   namfoop-rights off [--user U] [--yes] [--dry-run]
+#
+# Les droits valent pour les sessions ouvertes ensuite : se reconnecter (SSH compris) après « on ».
+# « off » retire ce que ce script a posé (fichier de limites, groupe realtime) ; les groupes standard
+# audio et video restent, ils ne donnent aucun privilège temps réel.
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/commun.sh
+. "$HERE/lib/commun.sh"
+
+usage() {
+  sed -n '9,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+TARGET=$(detect_target)
+USER_NAME=${SUDO_USER:-$(id -un)}
+CMD=status
+QUIET=0
+
+parse_common_args "$@"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+while (($#)); do
+  case $1 in
+    on | off | status) CMD=$1 ;;
+    --user) USER_NAME=${2:?--user demande un nom}; shift ;;
+    --quiet) QUIET=1 ;;
+    -y | --yes) YES=1 ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; die "argument inconnu : $1" ;;
+  esac
+  shift
+done
+id "$USER_NAME" &>/dev/null || die "utilisateur inconnu : $USER_NAME"
+
+LIMITS=/etc/security/limits.d/95-namfoop.conf
+LIMITS_CONTENT='# Posé par namfoop-install (scripts/namfoop-rights) : droits temps réel de namfoop.
+@audio - rtprio 95
+@audio - memlock unlimited'
+
+is_arch() { [[ $TARGET == endeavouros || $TARGET == arch ]]; }
+
+# Groupes à donner à l'utilisateur, selon la machine.
+wanted_groups() {
+  if is_arch; then
+    echo realtime audio
+  else
+    echo audio
+  fi
+  [[ $TARGET == pi5-dietpi ]] && echo video
+  return 0
+}
+
+in_group() {
+  id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx "$1"
+}
+
+as_root() {
+  if ((EUID == 0)); then run "$@"; else run sudo "$@"; fi
+}
+
+limits_ok() {
+  if is_arch; then
+    # realtime-privileges pose ses propres limites pour le groupe realtime.
+    pacman -Qq realtime-privileges &>/dev/null
+  else
+    [[ -r $LIMITS ]] && [[ $(cat "$LIMITS") == "$LIMITS_CONTENT" ]]
+  fi
+}
+
+configured() {
+  limits_ok || return 1
+  local g
+  for g in $(wanted_groups); do in_group "$g" || return 1; done
+}
+
+cmd_status() {
+  if ((QUIET)); then
+    configured
+    return
+  fi
+  echo "namfoop-rights — $TARGET, utilisateur $USER_NAME"
+  if is_arch; then
+    if limits_ok; then ok "paquet realtime-privileges installé"; else warn "paquet realtime-privileges absent"; fi
+  elif limits_ok; then
+    ok "limites posées : $LIMITS"
+  else
+    warn "limites absentes ou différentes : $LIMITS"
+  fi
+  local g
+  for g in $(wanted_groups); do
+    if in_group "$g"; then ok "dans le groupe $g"; else warn "pas dans le groupe $g"; fi
+  done
+  if [[ $USER_NAME == "$(id -un)" ]]; then
+    local rt mem
+    rt=$(ulimit -r)
+    mem=$(ulimit -l)
+    if [[ $rt == unlimited || $rt -ge 80 ]] && [[ $mem == unlimited ]]; then
+      ok "session en cours : priorité temps réel $rt, mémoire verrouillable $mem"
+    elif configured; then
+      warn "session en cours : priorité $rt, mémoire $mem Ko — réglé, mais pas encore reçu : se reconnecter"
+      if pgrep -x dropbear &>/dev/null; then
+        info "si c'est toujours le cas après reconnexion : le serveur SSH Dropbear (celui de DietPi par défaut) peut ne pas appliquer ces limites ; OpenSSH (dietpi-software) ou la console les appliquent, et le service de scène pose les siennes lui-même"
+      fi
+    else
+      warn "session en cours : priorité $rt, mémoire $mem Ko"
+    fi
+  fi
+  if configured; then ok "droits réglés"; else info "à faire : scripts/namfoop-rights on"; fi
+}
+
+cmd_on() {
+  if configured; then
+    ok "droits déjà réglés pour $USER_NAME — rien à faire"
+    return
+  fi
+  info "pour $USER_NAME : priorité temps réel 95, mémoire verrouillable sans limite, groupes $(wanted_groups | xargs)"
+  confirm "Régler ces droits ?" || die "rien changé"
+  if is_arch; then
+    limits_ok || as_root pacman -S --needed --noconfirm realtime-privileges
+  elif ! limits_ok; then
+    if [[ -e $LIMITS ]]; then
+      local backup
+      backup="$LIMITS.avant-namfoop-rights.$(date +%Y%m%d-%H%M%S)"
+      as_root cp -p "$LIMITS" "$backup"
+      info "copie de l'ancien fichier : $backup"
+    fi
+    if ((DRY_RUN)); then
+      info "[dry-run] écrire $LIMITS"
+    else
+      printf '%s\n' "$LIMITS_CONTENT" | as_root tee "$LIMITS" >/dev/null
+    fi
+  fi
+  local g
+  for g in $(wanted_groups); do
+    in_group "$g" || as_root usermod -aG "$g" "$USER_NAME"
+  done
+  ((DRY_RUN)) && return
+  ok "droits réglés pour $USER_NAME"
+  warn "ils valent pour les sessions ouvertes ensuite : se déconnecter puis se reconnecter (SSH compris)"
+}
+
+cmd_off() {
+  confirm "Retirer les droits temps réel posés par ce script pour $USER_NAME ?" || die "rien changé"
+  if is_arch; then
+    if in_group realtime; then as_root gpasswd -d "$USER_NAME" realtime; fi
+    info "le paquet realtime-privileges reste installé (sans effet hors du groupe realtime)"
+  elif [[ -e $LIMITS ]]; then
+    as_root rm -f "$LIMITS"
+  fi
+  ((DRY_RUN)) || ok "droits temps réel retirés ; les groupes audio et video restent (accès à la carte son et à vcgencmd)"
+}
+
+case $CMD in
+  status) cmd_status ;;
+  on) cmd_on ;;
+  off) cmd_off ;;
+esac

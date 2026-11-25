@@ -63,11 +63,7 @@ section() { printf '\n%s\n' "$1"; }
 is_arch() { [[ $TARGET == endeavouros || $TARGET == arch ]]; }
 
 rt_rights_fix() {
-  if is_arch; then
-    echo "sudo pacman -S --needed realtime-privileges && sudo usermod -aG realtime \$USER, puis se reconnecter"
-  else
-    echo "une ligne « @audio - rtprio 95 » et « @audio - memlock unlimited » dans /etc/security/limits.d/namfoop.conf, sudo usermod -aG audio \$USER, puis se reconnecter (le service de scène, lui, a LimitRTPRIO et LimitMEMLOCK)"
-  fi
+  echo "scripts/namfoop-rights on, puis se reconnecter (le service de scène, lui, pose ses limites dans son unit)"
 }
 
 # ---------------------------------------------------------------- noyau
@@ -187,7 +183,7 @@ check_pi() {
     note "vcgencmd absent : alimentation et température non vérifiées"
   elif [[ $thr != throttled=0x* ]]; then
     bad "vcgencmd n'a pas accès au processeur graphique : alimentation et température non vérifiées (${thr%%$'\n'*})" \
-      "sudo usermod -aG video \$USER, puis se reconnecter"
+      "scripts/namfoop-rights on (groupe video), puis se reconnecter"
   else
     thr=${thr#throttled=}
     if [[ $thr == 0x0 ]]; then

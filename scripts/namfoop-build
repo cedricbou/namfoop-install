@@ -217,6 +217,7 @@ cmd_install() {
   if [[ $(installed_version || true) == "$VERSION" ]] && [[ $(cat "$STATE" 2>/dev/null) == "$WANTED" ]]; then
     ok "namfoop $VERSION ($MODE) déjà installé : $BIN — rien à faire"
     check_path
+    offer_rights
     return
   fi
   install_deps
@@ -231,6 +232,22 @@ cmd_install() {
     ok "namfoop --version : $v"
   fi
   check_path
+  offer_rights
+}
+
+# namfoop joue sans craquement s'il a le droit de passer en temps réel : le proposer dès l'installation.
+offer_rights() {
+  local rights="$HERE/namfoop-rights"
+  [[ -x $rights ]] || return 0
+  "$rights" status --quiet && return 0
+  info "il reste à donner à $(id -un) les droits temps réel (priorité, mémoire verrouillée, groupes)"
+  if confirm "Les régler maintenant (scripts/namfoop-rights on) ?"; then
+    local args=(on --yes)
+    ((DRY_RUN)) && args+=(--dry-run)
+    "$rights" "${args[@]}"
+  else
+    info "plus tard : scripts/namfoop-rights on"
+  fi
 }
 
 case $CMD in
