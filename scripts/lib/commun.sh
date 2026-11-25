@@ -102,7 +102,11 @@ ensure_clock() {
   warn "l'heure de la machine n'est pas synchronisée par le réseau : $(date '+%F %T %Z')"
   info "si elle est en retard, les dépôts de paquets et git refuseront de télécharger (« Not live until … »)"
   if ! systemctl is-enabled --quiet systemd-timesyncd 2>/dev/null; then
-    warn "vérifie l'heure avec « date » ; « timedatectl » dit comment elle est tenue"
+    if [[ -d /boot/dietpi ]]; then
+      warn "synchronisation de l'heure coupée : dietpi-config, Advanced Options, Time sync mode, « Boot only » (une fois au démarrage, rien pendant le jeu) ; ou à la main : sudo date -s \"AAAA-MM-JJ HH:MM\""
+    else
+      warn "vérifie l'heure avec « date » ; « timedatectl » dit comment elle est tenue"
+    fi
     return 0
   fi
   if ! confirm "Relancer la synchronisation de l'heure (systemd-timesyncd) ?"; then

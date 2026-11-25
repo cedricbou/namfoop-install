@@ -78,8 +78,14 @@ jusqu'à ce que le réseau la corrige. Tant qu'elle est en retard, les dépôts 
 leurs signatures (« Not live until … ») et les téléchargements HTTPS échouent. Le script vérifie
 donc l'heure avant de télécharger, et propose de relancer sa synchronisation
 (`systemd-timesyncd`). Pour vérifier à la main : `timedatectl` doit dire
-`System clock synchronized: yes`. Sur DietPi, le réglage est dans `dietpi-config`, Advanced
-Options, Time sync mode.
+`System clock synchronized: yes`.
+
+Sur DietPi, le réglage est dans `dietpi-config`, Advanced Options, Time sync mode. **Boot only**
+convient à une machine de scène : l'heure est corrigée une fois au démarrage, puis plus rien ne
+tourne pendant le jeu. Couper la synchronisation n'est pas utile contre les xruns : namfoop et ALSA
+comptent le temps sur une horloge qui ne saute jamais, quel que soit le réglage de l'heure, et une
+correction coûte quelques microsecondes. Sans réseau sur scène, l'heure reste celle du dernier
+arrêt : une pile pour l'horloge du Pi 5 (connecteur RTC, pile officielle) la garde juste.
 
 ## Sur le Pi 5 : la mémoire
 
