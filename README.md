@@ -12,7 +12,7 @@ toi.
 
 | Sujet | Raspberry Pi 5 (DietPi) | EndeavourOS / Arch | Ubuntu | macOS, Windows |
 | :--- | :--- | :--- | :--- | :--- |
-| Compiler et installer namfoop | [écrit](guides/commun/compiler.md), essai à faire | [écrit](guides/commun/compiler.md), essai à faire | plus tard | quand namfoop le permettra |
+| Compiler et installer namfoop | [essayé](guides/commun/compiler.md) | [essayé](guides/commun/compiler.md) | plus tard | quand namfoop le permettra |
 | Bibliothèque de sons au bon endroit | [écrit](guides/commun/bibliotheque.md), essai à faire | [écrit](guides/commun/bibliotheque.md), essai à faire | plus tard | — |
 | Réglages temps réel du système | à écrire, poussés au maximum | à écrire, réversibles | plus tard | — |
 | Noyau PREEMPT_RT | **obligatoire** | en option | plus tard | — |
