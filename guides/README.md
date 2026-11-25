@@ -1,6 +1,6 @@
 # Guides
 
-- `commun/` : ce qui vaut pour tout Linux — compiler namfoop, ranger la bibliothèque,
+- `commun/` : ce qui vaut pour tout Linux — [compiler namfoop](commun/compiler.md), ranger la bibliothèque,
   comprendre les réglages temps réel, jouer en plein écran sans bureau (cage + foot).
 - `pi5-dietpi/` : le Raspberry Pi 5 de scène, sous DietPi, de la carte SD au premier
   son.
