@@ -277,9 +277,11 @@ check_namfoop() {
   if err=$(cd / && "$bin" models 2>&1 >/dev/null); then
     good "bibliothèque trouvée depuis n'importe quel dossier"
   else
-    local first=${err%%$'\n'*} fix="scripts/namfoop-library init"
-    [[ $first == *vide* ]] && fix="namfoop import <zips ou dossier>"
-    bad "namfoop ne trouve pas de sons depuis / : ${first#Error: }" "$fix"
+    # Le message de namfoop tient sur plusieurs lignes (la liste des endroits cherchés) : tout garder.
+    local fix="scripts/namfoop-library init"
+    err=$(printf '%s' "$err" | sed 's/^Error: //; s/^ *//' | paste -sd ' ')
+    [[ $err == *vide* ]] && fix="namfoop import <zips ou dossier>"
+    bad "namfoop ne trouve pas de sons depuis / : $err" "$fix"
   fi
 }
 

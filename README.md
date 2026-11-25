@@ -13,8 +13,8 @@ toi.
 | Sujet | Raspberry Pi 5 (DietPi) | EndeavourOS / Arch | Ubuntu | macOS, Windows |
 | :--- | :--- | :--- | :--- | :--- |
 | Compiler et installer namfoop | [essayé](guides/commun/compiler.md) | [essayé](guides/commun/compiler.md) | plus tard | quand namfoop le permettra |
-| Bibliothèque de sons au bon endroit | [écrit](guides/commun/bibliotheque.md), essai à faire | [écrit](guides/commun/bibliotheque.md), essai à faire | plus tard | — |
-| Vérifier que la machine est prête | [écrit](guides/commun/verifier.md), essai à faire | [écrit](guides/commun/verifier.md), essai à faire | plus tard | — |
+| Bibliothèque de sons au bon endroit | [essayé](guides/commun/bibliotheque.md) | [écrit](guides/commun/bibliotheque.md), `status` essayé | plus tard | — |
+| Vérifier que la machine est prête | [essayé](guides/commun/verifier.md) | [essayé](guides/commun/verifier.md) | plus tard | — |
 | Réglages temps réel du système | à écrire, poussés au maximum | à écrire, réversibles | plus tard | — |
 | Noyau PREEMPT_RT | **obligatoire** | en option | plus tard | — |
 | Plein écran sans bureau (cage + foot) | au démarrage | à la demande (mode scène) | plus tard | — |
